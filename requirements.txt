@@ -6,3 +6,4 @@ xgboost
 catboost
 torch
 joblib
+optuna
