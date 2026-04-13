@@ -8,7 +8,7 @@ import math
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 🌟 0. 核心修正：补全类定义与 Scikit-learn 标识
+# 🌟 0. 核心修正：补全类定义与 Scikit-learn 接口
 # ==========================================
 
 class StandardDNN(nn.Module):
@@ -22,29 +22,26 @@ class StandardDNN(nn.Module):
     def forward(self, x): return self.network(x)
 
 class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
-    _estimator_type = "regressor" # 必须声明，防止 sklearn 判定失效
+    _estimator_type = "regressor"
     def __init__(self, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
         self.epochs = epochs; self.batch_size = batch_size
-        self.lr_min = lr_min; self.lr_max = lr_max; self.T_0 = T_0; self.T_mult = T_mult
-    def fit(self, X, y): return self
+    def fit(self, X, y): return self # 必须具备此方法以通过 sklearn 校验
     def predict(self, X):
         self.model_.eval()
-        device = getattr(self, 'device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-        X_t = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(device)
-        with torch.no_grad(): return self.model_(X_t).cpu().numpy().flatten()
+        dev = getattr(self, 'device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        Xt = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(dev)
+        with torch.no_grad(): return self.model_(Xt).cpu().numpy().flatten()
 
 class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
     def __init__(self, k_ensembles=8, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
-        self.k_ensembles = k_ensembles; self.epochs = epochs; self.batch_size = batch_size
-        self.lr_min = lr_min; self.lr_max = lr_max; self.T_0 = T_0; self.T_mult = T_mult
+        self.k_ensembles = k_ensembles
     def fit(self, X, y): return self
     def predict(self, X):
-        device = getattr(self, 'device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-        X_t = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(device)
+        dev = getattr(self, 'device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        Xt = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(dev)
         for m in self.models_: m.eval()
-        with torch.no_grad():
-            return torch.cat([m(X_t) for m in self.models_], dim=1).mean(dim=1).cpu().numpy()
+        with torch.no_grad(): return torch.cat([m(Xt) for m in self.models_], dim=1).mean(dim=1).cpu().numpy()
 
 class TrueTabMMini(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, k_ensembles=32, dropout=0.1):
@@ -63,20 +60,18 @@ class TrueTabMMini(nn.Module):
         return (out * self.head_weights).sum(dim=-1) + self.head_biases
 
 class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
-    _estimator_type = "regressor" # 关键修正：确保 Pipeline 校验通过
+    _estimator_type = "regressor"
     def __init__(self, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
-        self.epochs = epochs; self.batch_size = batch_size; self.lr_min = lr_min; self.lr_max = lr_max
-        self.T_0 = T_0; self.T_mult = T_mult
-    def fit(self, X, y): return self
+        self.epochs = epochs; self.batch_size = batch_size
+    def fit(self, X, y): return self # 核心修正
     def predict(self, X):
         self.model_.eval()
-        device = getattr(self, 'device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-        X_t = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(device)
-        with torch.no_grad():
-            return self.model_(X_t).mean(dim=1).cpu().numpy()
+        dev = getattr(self, 'device', torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        Xt = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(dev)
+        with torch.no_grad(): return self.model_(Xt).mean(dim=1).cpu().numpy()
 
 # ==========================================
-# 📥 加载模型与数据
+# 📥 加载数据
 # ==========================================
 @st.cache_resource
 def load_data():
@@ -87,71 +82,81 @@ models = data['models']
 X_cols = data['X'].columns.tolist()
 
 # ==========================================
-# 📊 界面布局 (极简风格)
+# 界面布局 (极简设计)
 # ==========================================
-st.set_page_config(page_title="吸附预测系统", layout="centered")
-st.title("多糖基材料吸附量预测系统")
+st.title("多糖吸附量预测系统")
 
-st.header("输入实验参数")
+st.header("输入原始参数")
 col1, col2 = st.columns(2)
+
+user_raw_inputs = {}
 
 with col1:
     st.subheader("材料与官能团")
-    raw_ssa = st.number_input("比表面积 (m²/g)", value=200.0)
-    raw_mw = st.number_input("分子量 (kDa/MDa)", value=500.0)
+    # 动态识别需要对数转换的物理属性
+    user_raw_inputs['ssa'] = st.number_input("比表面积 (m²/g)", value=200.0)
+    user_raw_inputs['mw'] = st.number_input("分子量 (kDa/MDa)", value=500.0)
     
+    # 动态识别所有以 FG_ 开头的官能团特征
     fg_cols = [c for c in X_cols if c.startswith('FG_')]
-    user_fgs = {fg: st.checkbox(fg.replace('FG_', '')) for fg in fg_cols}
+    for fg in fg_cols:
+        user_raw_inputs[fg] = st.checkbox(fg.replace('FG_', ''))
 
 with col2:
-    st.subheader("反应条件")
-    raw_ph = st.number_input("pH", value=5.5)
-    raw_is = st.number_input("离子强度 (mol/L)", value=0.01, format="%.4f")
-    raw_time = st.number_input("吸附时间 (min)", value=120.0)
-    raw_c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0)
-    raw_dose = st.number_input("投加量 Dose (mg/ml)", value=1.0)
+    st.subheader("反应环境")
+    user_raw_inputs['ph'] = st.number_input("pH", value=5.5)
+    user_raw_inputs['is'] = st.number_input("离子强度 (mol/L)", value=0.01, format="%.4f")
+    user_raw_inputs['time'] = st.number_input("吸附时间 (min)", value=120.0)
+    user_raw_inputs['c0'] = st.number_input("初始浓度 C0 (mg/L)", value=50.0)
+    user_raw_inputs['dose'] = st.number_input("投加量 Dose (mg/ml)", value=1.0)
 
 st.subheader("DOM 浓度 (mg/L)")
+# 动态识别所有以 DOM_ 开头的复合浓度特征
 dom_cols = [c for c in X_cols if c.startswith('DOM_')]
-user_doms = {dom: st.number_input(dom.replace('DOM_', '').replace('_浓度', ''), value=0.0) for dom in dom_cols}
+for dom in dom_cols:
+    label = dom.replace('DOM_', '').replace('_浓度', '')
+    user_raw_inputs[dom] = st.number_input(f"{label} 浓度", value=0.0)
 
 # ==========================================
-# 🚀 预测逻辑
+# 🚀 预测逻辑 (动态特征映射)
 # ==========================================
 if st.button("计算预测值"):
-    input_dict = {}
+    # 建立最终的特征字典，确保与 X_cols 严格对应
+    final_input_dict = {}
+
+    # 1. 处理对数转换列 (严格同步训练脚本逻辑)
+    if 'Log_specific surface area m2/g' in X_cols:
+        final_input_dict['Log_specific surface area m2/g'] = np.log1p(user_raw_inputs['ssa'])
+    if 'Log_molecular weight' in X_cols:
+        final_input_dict['Log_molecular weight'] = np.log1p(user_raw_inputs['mw'])
+    if 'Log_adsorption time min' in X_cols:
+        final_input_dict['Log_adsorption time min'] = np.log1p(user_raw_inputs['time'])
+    if 'Log_C0_to_Dose_Ratio' in X_cols:
+        final_input_dict['Log_C0_to_Dose_Ratio'] = np.log1p(user_raw_inputs['c0'] / (user_raw_inputs['dose'] + 1e-5))
     
-    # 对数平滑转换 (必须同步训练逻辑)
-    input_dict['Log_specific surface area m2/g'] = np.log1p(raw_ssa)
-    input_dict['Log_molecular weight'] = np.log1p(raw_mw)
-    input_dict['Log_adsorption time min'] = np.log1p(raw_time)
-    input_dict['Log_C0_to_Dose_Ratio'] = np.log1p(raw_c0 / (raw_dose + 1e-5))
-    
-    if 'pH' in X_cols: input_dict['pH'] = raw_ph
-    if 'Ionic strength' in X_cols: input_dict['Ionic strength'] = raw_is
-    
-    # 特征映射
-    for fg, val in user_fgs.items(): input_dict[fg] = float(val)
-    for dom, val in user_doms.items(): input_dict[dom] = float(val)
-    
-    final_input = pd.DataFrame([input_dict]).reindex(columns=X_cols, fill_value=0.0)
-    
-    # 锁定最佳模型 True TabM
+    # 2. 处理线性环境列
+    if 'pH' in X_cols: final_input_dict['pH'] = user_raw_inputs['ph']
+    if 'Ionic strength' in X_cols: final_input_dict['Ionic strength'] = user_raw_inputs['is']
+
+    # 3. 处理官能团与 DOM 浓度 (这些列名在字典和 X_cols 中是一一对应的)
+    for c in X_cols:
+        if c in user_raw_inputs:
+            final_input_dict[c] = float(user_raw_inputs[c])
+
+    # 4. 转换成 DataFrame 并排序
+    final_df = pd.DataFrame([final_input_dict]).reindex(columns=X_cols, fill_value=0.0)
+
+    # 5. 执行预测
     best_name = 'True TabM' if 'True TabM' in models else list(models.keys())[0]
     
     try:
-        pred_log = models[best_name].predict(final_input)[0]
+        pred_log = models[best_name].predict(final_df)[0]
         prediction = np.expm1(pred_log)
         
-        st.divider()
-        st.metric(label=f"预测吸附量 Qm (单位: mg/g)", value=f"{prediction:.2f}")
-        st.caption(f"当前计算内核: {best_name}")
+        st.markdown("---")
+        st.metric(label=f"预测吸附量 Qm (mg/g)", value=f"{prediction:.2f}")
+        st.caption(f"当前计算模型: {best_name}")
         
-        with st.expander("对比其他模型"):
-            for name, model in models.items():
-                if name != best_name:
-                    p_log = model.predict(final_input)[0]
-                    st.write(f"{name}: {np.expm1(p_log):.2f} mg/g")
-                    
     except Exception as e:
-        st.error(f"预测出错: {e}")
+        st.error(f"预测过程出错: {e}")
+        st.info("排查提示：请确保 model_artifacts_v3.pkl 与此脚本在同一目录下。")
