@@ -5,10 +5,11 @@ import joblib
 import torch
 import torch.nn as nn
 import math
+import sys
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 1. 深度学习架构 (必须与训练脚本完全对齐)
+# 1. 深度学习架构 (严格对齐训练脚本)
 # ==========================================
 
 class StandardDNN(nn.Module):
@@ -36,6 +37,7 @@ class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
         if hasattr(self, 'model_'):
             self.model_.to(device)
             self.model_.eval()
+        # 确保输入是 float32 且在 CPU 上
         X_t = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(device)
         with torch.no_grad():
             preds = self.model_(X_t).cpu().numpy().flatten()
@@ -97,15 +99,18 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
         return np.clip(preds, 0.0, 6.5)
 
 # ==========================================
-# 2. 模型加载与注入
+# 2. 命名空间注入与模型加载
 # ==========================================
 import __main__
 __main__.PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
 __main__.PyTorchDeepEnsembleRegressor = PyTorchDeepEnsembleRegressor
+__main__.StandardDNN = StandardDNN
+__main__.TrueTabMMini = TrueTabMMini
 
 @st.cache_resource
 def load_model_pack():
+    # 强制加载到 CPU 避免 CUDA 错误
     return joblib.load('model_artifacts_v3.pkl')
 
 try:
@@ -113,19 +118,16 @@ try:
     models = data_pack['models']
     X_cols = data_pack['X'].columns.tolist()
 except Exception as e:
-    st.error(f"模型加载失败，请确保 'model_artifacts_v3.pkl' 文件在当前目录下。错误信息: {e}")
+    st.error(f"模型加载失败: {e}")
     st.stop()
 
 # ==========================================
-# 3. Streamlit UI 界面设计
+# 3. 界面布局 (去除所有图标)
 # ==========================================
 st.set_page_config(page_title="Qm Adsorption Predictor", layout="wide")
 
 st.title("多糖基材料吸附量 (Qm) 智能预测系统")
-st.markdown("""
-本系统基于 TabM 架构及多种集成树模型，提供重金属吸附量预测。
-请输入实验参数，系统将自动进行特征工程转换并给出预测结果。
-""")
+st.markdown("说明：输入实验参数后，点击下方预测按钮。如果某项指标在您的原始实验中不存在，请保持默认值（通常为0或均值）。")
 
 with st.sidebar:
     st.header("预测引擎设置")
@@ -137,11 +139,17 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("材料物理化学性质")
+    # 针对可能缺失的特征，检查是否存在于 X_cols 中
     raw_ssa = st.number_input("比表面积 Specific Surface Area (m²/g)", value=150.0)
     raw_mw = st.number_input("分子量 Molecular Weight (kDa)", value=300.0)
-    # 修改 1：pH 变为手动填充
+    # 修改 1：pH 手动填充
     raw_ph = st.number_input("溶液 pH 值", value=5.5, step=0.1)
-    raw_is = st.number_input("离子强度 Ionic Strength (mol/L)", value=0.01, format="%.4f")
+    
+    # 仅当模型训练时包含该特征，才显示输入框，否则设为隐藏默认值
+    if 'Ionic strength' in X_cols:
+        raw_is = st.number_input("离子强度 Ionic Strength (mol/L)", value=0.01, format="%.4f")
+    else:
+        raw_is = 0.01
 
 with col2:
     st.subheader("实验反应条件")
@@ -149,14 +157,16 @@ with col2:
     raw_c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0)
     raw_dose = st.number_input("投加量 Dose (mg/ml)", value=1.0)
     
-    st.subheader("官能团与环境因子")
+    st.subheader("官能团信息")
     fg_cols = [c for c in X_cols if c.startswith('FG_')]
     user_fgs = {}
-    fg_sub_cols = st.columns(2)
-    for i, fg in enumerate(fg_cols):
-        with fg_sub_cols[i % 2]:
-            user_fgs[fg] = st.checkbox(fg.replace('FG_', ''), value=False)
+    if fg_cols:
+        fg_sub_cols = st.columns(2)
+        for i, fg in enumerate(fg_cols):
+            with fg_sub_cols[i % 2]:
+                user_fgs[fg] = st.checkbox(fg.replace('FG_', ''), value=False)
 
+# 环境因子 (DOM)
 dom_cols = [c for c in X_cols if c.startswith('DOM_')]
 if dom_cols:
     with st.expander("环境共存离子/DOM 浓度 (mg/L)"):
@@ -169,45 +179,65 @@ else:
     user_doms = {}
 
 # ==========================================
-# 4. 预测逻辑
+# 4. 预测逻辑 (修复预测为 0 的问题)
 # ==========================================
 if st.button("开始预测吸附量 Qm"):
     try:
+        # 1. 准备输入字典 (必须与训练时的特征名完全匹配)
         input_dict = {}
         
-        # 特征工程对齐
+        # 严格对数转换逻辑
         input_dict['Log_specific surface area m2/g'] = np.log1p(raw_ssa)
         input_dict['Log_molecular weight'] = np.log1p(raw_mw)
         input_dict['Log_adsorption time min'] = np.log1p(raw_time)
         input_dict['Log_C0_to_Dose_Ratio'] = np.log1p(raw_c0 / (raw_dose + 1e-5))
         
-        if 'pH' in X_cols: input_dict['pH'] = raw_ph
-        if 'Ionic strength' in X_cols: input_dict['Ionic strength'] = raw_is
+        # 只有训练集中有的特征才填入
+        if 'pH' in X_cols: 
+            input_dict['pH'] = raw_ph
+        if 'Ionic strength' in X_cols: 
+            input_dict['Ionic strength'] = raw_is
         
+        # 官能团与 DOM
         for fg, val in user_fgs.items(): input_dict[fg] = float(val)
         for dom, val in user_doms.items(): input_dict[dom] = float(val)
         
+        # 2. DataFrame 对齐 (关键：使用 reindex 并填充训练集缺失的列)
+        # 如果原始数据里没有 Ionic strength，reindex 会自动补 0，确保 DNN 输入维度正确
         final_input = pd.DataFrame([input_dict]).reindex(columns=X_cols, fill_value=0.0)
         
+        # 3. 推理 (通过 Pipeline 调用，自动包含 StandardScaler)
         model = models[selected_model_name]
+        
+        # 调试信息：如果预测总是 0，可以暂时取消下方注释查看输入是否异常
+        # st.write(final_input) 
+        
+        # 调用的是 Pipeline 的 predict，它会先调用 scaler.transform() 再调用 model.predict()
         pred_log = model.predict(final_input)[0]
+        
+        # 指数反转
         prediction = np.expm1(pred_log)
+        
+        # 4. 结果展示
+        if prediction < 0.0001:
+            st.warning("预测值接近于 0，请检查输入参数是否在训练集范围内，或尝试切换其他模型（如随机森林）。")
         
         st.success("预测成功")
         res_col1, res_col2 = st.columns(2)
         with res_col1:
             st.metric(label="预测吸附量 Qm (mg/g)", value=f"{prediction:.4f}")
         with res_col2:
-            st.info(f"当前模型: {selected_model_name}")
+            st.info(f"使用的模型: {selected_model_name}")
             
-        with st.expander("查看其他模型预测参考"):
+        with st.expander("查看其他模型预测对比"):
             for name, m in models.items():
                 if name != selected_model_name:
                     p_log = m.predict(final_input)[0]
                     st.write(f"**{name}**: {np.expm1(p_log):.4f} mg/g")
 
     except Exception as e:
-        st.error(f"预测计算过程中发生错误: {e}")
+        st.error(f"预测计算失败: {str(e)}")
+        st.info("建议：请检查 .pkl 文件是否为最新训练版本，且包含所有必要的类定义。")
 
 st.markdown("---")
-st.caption("注：预测结果受训练数据范围限制，建议输入参数在实验合理范围内。")
+st.caption("提示：如果 DNN 类模型输出异常，通常是因为输入特征分布与训练集偏差过大，导致神经网络神经元失活。")
