@@ -32,7 +32,7 @@ class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
     def fit(self, X, y): return self
 
     def predict(self, X):
-        device = torch.device('cpu') # 部署端强制 CPU
+        device = torch.device('cpu') 
         if hasattr(self, 'model_'):
             self.model_.to(device)
             self.model_.eval()
@@ -97,7 +97,7 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
         return np.clip(preds, 0.0, 6.5)
 
 # ==========================================
-# 2. 模型加载与注入 (解决序列化命名空间问题)
+# 2. 模型加载与注入
 # ==========================================
 import __main__
 __main__.PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
@@ -121,37 +121,35 @@ except Exception as e:
 # ==========================================
 st.set_page_config(page_title="Qm Adsorption Predictor", layout="wide")
 
-st.title("🚀 多糖基材料吸附量 (Qm) 智能预测系统")
+st.title("多糖基材料吸附量 (Qm) 智能预测系统")
 st.markdown("""
-本系统基于 **ICLR 2025 TabM** 架构及多种集成树模型，提供高精度的重金属吸附量预测。
-请输入实验参数，系统将自动进行对数转换并给出预测结果。
+本系统基于 TabM 架构及多种集成树模型，提供重金属吸附量预测。
+请输入实验参数，系统将自动进行特征工程转换并给出预测结果。
 """)
 
 with st.sidebar:
-    st.header("⚙️ 预测引擎设置")
-    # 默认选择训练时 OOF R2 最高的模型
+    st.header("预测引擎设置")
     best_model_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
     selected_model_name = st.selectbox("选择预测模型", list(models.keys()), index=list(models.keys()).index(best_model_name))
     st.info(f"当前推荐最佳模型: {best_model_name}")
 
-# 输入列表分两列展示
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🧪 材料物理化学性质")
-    raw_ssa = st.number_input("比表面积 Specific Surface Area (m²/g)", value=150.0, help="将被对数转换")
-    raw_mw = st.number_input("分子量 Molecular Weight (kDa)", value=300.0, help="将被对数转换")
-    raw_ph = st.slider("溶液 pH 值", 2.0, 12.0, 5.5)
+    st.subheader("材料物理化学性质")
+    raw_ssa = st.number_input("比表面积 Specific Surface Area (m²/g)", value=150.0)
+    raw_mw = st.number_input("分子量 Molecular Weight (kDa)", value=300.0)
+    # 修改 1：pH 变为手动填充
+    raw_ph = st.number_input("溶液 pH 值", value=5.5, step=0.1)
     raw_is = st.number_input("离子强度 Ionic Strength (mol/L)", value=0.01, format="%.4f")
 
 with col2:
-    st.subheader("⏱️ 实验反应条件")
-    raw_time = st.number_input("吸附时间 Adsorption Time (min)", value=120.0, help="将被对数转换")
+    st.subheader("实验反应条件")
+    raw_time = st.number_input("吸附时间 Adsorption Time (min)", value=120.0)
     raw_c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0)
     raw_dose = st.number_input("投加量 Dose (mg/ml)", value=1.0)
     
-    st.subheader("🧬 官能团与环境因子")
-    # 自动识别并展示官能团勾选框
+    st.subheader("官能团与环境因子")
     fg_cols = [c for c in X_cols if c.startswith('FG_')]
     user_fgs = {}
     fg_sub_cols = st.columns(2)
@@ -159,10 +157,9 @@ with col2:
         with fg_sub_cols[i % 2]:
             user_fgs[fg] = st.checkbox(fg.replace('FG_', ''), value=False)
 
-# DOM 浓度输入 (如果有)
 dom_cols = [c for c in X_cols if c.startswith('DOM_')]
 if dom_cols:
-    with st.expander("🌍 环境共存离子/DOM 浓度 (mg/L)"):
+    with st.expander("环境共存离子/DOM 浓度 (mg/L)"):
         dom_sub_cols = st.columns(3)
         user_doms = {}
         for i, dom in enumerate(dom_cols):
@@ -174,49 +171,39 @@ else:
 # ==========================================
 # 4. 预测逻辑
 # ==========================================
-if st.button("✨ 开始预测吸附量 Qm"):
+if st.button("开始预测吸附量 Qm"):
     try:
-        # 1. 构建输入字典
         input_dict = {}
         
-        # 严格对应训练脚本的特征工程
-        # 对数转换特征
+        # 特征工程对齐
         input_dict['Log_specific surface area m2/g'] = np.log1p(raw_ssa)
         input_dict['Log_molecular weight'] = np.log1p(raw_mw)
         input_dict['Log_adsorption time min'] = np.log1p(raw_time)
         input_dict['Log_C0_to_Dose_Ratio'] = np.log1p(raw_c0 / (raw_dose + 1e-5))
         
-        # 线性特征
         if 'pH' in X_cols: input_dict['pH'] = raw_ph
         if 'Ionic strength' in X_cols: input_dict['Ionic strength'] = raw_is
         
-        # 官能团与DOM
         for fg, val in user_fgs.items(): input_dict[fg] = float(val)
         for dom, val in user_doms.items(): input_dict[dom] = float(val)
         
-        # 2. DataFrame 对齐与重排
         final_input = pd.DataFrame([input_dict]).reindex(columns=X_cols, fill_value=0.0)
         
-        # 3. 模型推理
         model = models[selected_model_name]
         pred_log = model.predict(final_input)[0]
         prediction = np.expm1(pred_log)
         
-        # 4. 结果展示
-        st.success(f"### 预测成功！")
+        st.success("预测成功")
         res_col1, res_col2 = st.columns(2)
         with res_col1:
             st.metric(label="预测吸附量 Qm (mg/g)", value=f"{prediction:.4f}")
         with res_col2:
-            st.info(f"使用的模型: {selected_model_name}")
+            st.info(f"当前模型: {selected_model_name}")
             
-        # 展示其他模型作为参考
-        with st.expander("🔍 查看其他模型预测参考"):
-            ref_results = {}
+        with st.expander("查看其他模型预测参考"):
             for name, m in models.items():
                 if name != selected_model_name:
                     p_log = m.predict(final_input)[0]
-                    ref_results[name] = np.expm1(p_log)
                     st.write(f"**{name}**: {np.expm1(p_log):.4f} mg/g")
 
     except Exception as e:
