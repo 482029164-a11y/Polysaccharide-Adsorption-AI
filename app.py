@@ -8,7 +8,7 @@ import math
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 1. 深度学习架构 (必须与训练脚本完全对齐)
+# 1. 深度学习架构 (含 Scikit-learn 校验绕过机制)
 # ==========================================
 
 class StandardDNN(nn.Module):
@@ -28,9 +28,8 @@ class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
         self.epochs = epochs; self.batch_size = batch_size
         self.lr_min = lr_min; self.lr_max = lr_max
         self.T_0 = T_0; self.T_mult = T_mult
-
     def fit(self, X, y): return self
-
+    def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu') 
         if hasattr(self, 'model_'):
@@ -46,9 +45,8 @@ class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
     def __init__(self, k_ensembles=8, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
         self.k_ensembles = k_ensembles; self.epochs = epochs; self.batch_size = batch_size
         self.lr_min = lr_min; self.lr_max = lr_max; self.T_0 = T_0; self.T_mult = T_mult
-
     def fit(self, X, y): return self
-
+    def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu')
         X_t = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(device)
@@ -82,9 +80,8 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
         self.epochs = epochs; self.batch_size = batch_size
         self.lr_min = lr_min; self.lr_max = lr_max
         self.T_0 = T_0; self.T_mult = T_mult
-
     def fit(self, X, y): return self
-
+    def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu')
         if hasattr(self, 'model_'):
@@ -95,9 +92,7 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy()
         return np.clip(preds, 0.0, 6.5)
 
-# ==========================================
-# 2. 命名空间注入与模型加载
-# ==========================================
+# 命名空间注入，防止 joblib 找不到类
 import __main__
 __main__.PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
@@ -105,6 +100,9 @@ __main__.PyTorchDeepEnsembleRegressor = PyTorchDeepEnsembleRegressor
 __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
 
+# ==========================================
+# 2. 缓存加载与材料学特征分类引擎
+# ==========================================
 @st.cache_resource
 def load_model_pack():
     return joblib.load('model_artifacts_v3.pkl')
@@ -113,112 +111,131 @@ data_pack = load_model_pack()
 models = data_pack['models']
 X_cols = data_pack['X'].columns.tolist()
 
-# ==========================================
-# 3. 界面布局 (三界面结构)
-# ==========================================
-st.set_page_config(page_title="Qm Predictor", layout="centered")
-st.title("多糖基材料吸附量预测系统")
-
-# 侧边栏：选择主预测引擎
-with st.sidebar:
-    st.header("预测引擎设置")
-    best_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
-    selected_model = st.selectbox("选择主预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
-    st.markdown("---")
-    st.markdown("系统将以该模型作为核心输出，同时在下方交叉验证区域提供其他模型的计算结果以供参考。")
-
-# 自动分类特征
-log_mapping = {
-    'Log_specific surface area m2/g': '比表面积 (m²/g)',
-    'Log_molecular weight': '分子量 (kDa)',
-    'Log_adsorption time min': '吸附时间 (min)',
-    'Log_C0_to_Dose_Ratio': 'C0/Dose 比值'
-}
+# -- 基于材料学视角的特征分类 --
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
 dom_cols = [c for c in X_cols if c.startswith('DOM_')]
-other_cols = [c for c in X_cols if c not in log_mapping and c not in fg_cols and c not in dom_cols]
 
-# 初始化用户输入字典
+# 已手动处理对数转换的核心变量
+log_handled = [
+    'Log_specific surface area m2/g', 
+    'Log_molecular weight', 
+    'Log_adsorption time min', 
+    'Log_C0_to_Dose_Ratio'
+]
+
+# 剩余未分类特征智能归属
+remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_cols and c not in log_handled]
+
+env_cols = []
+mat_cols = []
+
+for col in remaining_cols:
+    col_lower = col.lower()
+    # 环境与操作条件的特征词
+    if any(k in col_lower for k in ['ph', 'ionic', 'temp', 'speed', 'rpm']):
+        env_cols.append(col)
+    else:
+        # 归属为材料固有物理/化学属性 (如 porosity, pore size, zeta potential, C%, N% 等)
+        mat_cols.append(col)
+
+# ==========================================
+# 3. 极简专业界面设计 (三标签页结构)
+# ==========================================
+st.set_page_config(page_title="多糖基材料吸附性能预测", layout="centered")
+st.title("多糖基材料重金属吸附性能预测系统")
+st.markdown("基于机器学习框架进行理论预测，提供多模型交叉验证以供参考。")
+
+with st.sidebar:
+    st.subheader("预测引擎设置")
+    best_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
+    selected_model = st.selectbox("选择主预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
+    st.markdown("系统将以该模型为主输出，并在预测结果下方附带其他模型的计算结果以供横向对比。")
+
 user_inputs = {}
 
-# 使用 st.tabs 创建三个界面分区
-tab_env, tab_mat, tab_dom = st.tabs(["反应环境条件", "材料固有属性", "DOM 浓度特征"])
+# 核心三板块标签页
+tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
 
-# 界面1：反应环境条件
+# ----------------- 界面 1: 环境与操作条件 -----------------
 with tab_env:
-    st.subheader("物理环境设置")
+    st.subheader("热力学与动力学操作参数")
     
-    # 吸附时间
-    if 'Log_adsorption time min' in X_cols:
-        val = st.number_input("吸附时间 (min)", value=120.0, step=10.0)
-        user_inputs['Log_adsorption time min'] = np.log1p(val)
+    col1_e, col2_e = st.columns(2)
+    with col1_e:
+        if 'Log_C0_to_Dose_Ratio' in X_cols:
+            c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, step=5.0)
+            dose = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, step=0.1)
+            user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
+    
+    with col2_e:
+        if 'Log_adsorption time min' in X_cols:
+            val = st.number_input("吸附时间 (min)", value=120.0, step=10.0)
+            user_inputs['Log_adsorption time min'] = np.log1p(val)
 
-    # 初始浓度与投加量
-    if 'Log_C0_to_Dose_Ratio' in X_cols:
-        c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, step=5.0)
-        dose = st.number_input("投加量 Dose (mg/ml)", value=1.0, step=0.1)
-        user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
-        
-    # 其他环境特征 (pH, 离子强度等)
-    for col in other_cols:
-        user_inputs[col] = st.number_input(f"{col}", value=0.0, format="%.4f" if "strength" in col.lower() else "%.2f")
+    st.markdown("---")
+    st.subheader("溶液化学环境")
+    for col in env_cols:
+        format_str = "%.4f" if "strength" in col.lower() else "%.2f"
+        user_inputs[col] = st.number_input(f"{col}", value=0.0, format=format_str)
 
-# 界面2：材料固有属性
+# ----------------- 界面 2: 材料理化特性 -----------------
 with tab_mat:
-    st.subheader("物理与结构参数")
+    st.subheader("形貌与高分子特性")
     
-    if 'Log_specific surface area m2/g' in X_cols:
-        val = st.number_input("比表面积 (m²/g)", value=150.0, step=10.0)
-        user_inputs['Log_specific surface area m2/g'] = np.log1p(val)
-        
-    if 'Log_molecular weight' in X_cols:
-        val = st.number_input("分子量 (kDa)", value=300.0, step=50.0)
-        user_inputs['Log_molecular weight'] = np.log1p(val)
+    col1_m, col2_m = st.columns(2)
+    with col1_m:
+        if 'Log_specific surface area m2/g' in X_cols:
+            val = st.number_input("比表面积 (m²/g)", value=150.0, step=10.0)
+            user_inputs['Log_specific surface area m2/g'] = np.log1p(val)
+    with col2_m:
+        if 'Log_molecular weight' in X_cols:
+            val = st.number_input("分子量 (kDa)", value=300.0, step=50.0)
+            user_inputs['Log_molecular weight'] = np.log1p(val)
+            
+    # 动态渲染其他孔结构/元素属性
+    if mat_cols:
+        for col in mat_cols:
+            user_inputs[col] = st.number_input(f"{col}", value=0.0)
 
-    st.subheader("表面官能团 (勾选即存在)")
+    st.markdown("---")
+    st.subheader("表面化学性质 (存在勾选 1，缺失保留 0)")
     if fg_cols:
-        # 使用多列显示官能团，节约纵向空间
         fg_layout_cols = st.columns(3)
         for i, fg in enumerate(fg_cols):
             with fg_layout_cols[i % 3]:
                 user_inputs[fg] = float(st.checkbox(fg.replace('FG_', '')))
 
-# 界面3：DOM浓度特征
+# ----------------- 界面 3: DOM 干扰 -----------------
 with tab_dom:
-    st.subheader("溶解性有机质 (DOM) 共存干扰")
+    st.subheader("溶解性有机质竞争干扰评估")
     if dom_cols:
         for dom in dom_cols:
             user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, step=1.0)
     else:
-        st.info("模型训练数据中未检测到有效的 DOM 浓度特征列。")
+        st.write("当前模型训练空间未包含 DOM 特征。")
 
 # ==========================================
-# 4. 预测执行与多模型对比
+# 4. 模型推理与交叉验证展示
 # ==========================================
 st.markdown("---")
-if st.button("开始预测", use_container_width=True):
-    # 构建 DataFrame 并严格对齐训练集的列顺序
+if st.button("执行模型推理", use_container_width=True):
+    # 构建 DataFrame，缺失值补零，且严格按模型所需列名排序
     final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols, fill_value=0.0)
     
     try:
-        # 1. 核心模型预测
+        # 1. 主模型计算
         model_pipeline = models[selected_model]
         pred_log = model_pipeline.predict(final_df)[0]
         main_prediction = np.expm1(pred_log)
         
-        st.success("预测计算已完成")
-        
-        # 核心结果展示
+        st.success("推理完成")
         st.metric(label=f"主引擎 [{selected_model}] 预测吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
         
-        # 2. 其他模型参考对比
+        # 2. 其他模型交叉验证参考
         st.markdown("#### 其他模型评估参考")
-        
-        # 为了美观，使用 columns 平铺其他模型的结果
         other_models = [m for m in models.keys() if m != selected_model]
         
         if other_models:
-            # 动态生成列布局，每行放 3 个模型
             cols = st.columns(3)
             for i, model_name in enumerate(other_models):
                 try:
@@ -233,4 +250,4 @@ if st.button("开始预测", use_container_width=True):
                         st.warning(f"**{model_name}**\n\n计算失败")
         
     except Exception as e:
-        st.error(f"预测过程出错: {e}")
+        st.error(f"推理引擎错误: {e}")
