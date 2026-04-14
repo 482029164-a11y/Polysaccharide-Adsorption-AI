@@ -139,13 +139,55 @@ for col in remaining_cols:
         mat_cols.append(col)
 
 # ==========================================
-# 3. 极简专业界面设计 (三标签页结构)
+# 3. 极简专业界面设计 (三标签页结构 + 动态主题)
 # ==========================================
 st.set_page_config(page_title="多糖基材料吸附性能预测", layout="centered")
-st.title("多糖基材料重金属吸附性能预测系统")
+
+# --- 新增：动态主题控制逻辑 ---
+if 'theme_choice' not in st.session_state:
+    st.session_state.theme_choice = '默认极简 (Light)'
+
+def apply_custom_theme(theme_name):
+    if theme_name == '暗夜深邃 (Dark)':
+        css = """
+        <style>
+            .stApp { background-color: #1E1E1E; color: #FFFFFF; }
+            [data-testid="stSidebar"] { background-color: #2b2b2b; }
+            h1, h2, h3, h4, h5, h6, p, label, span { color: #FFFFFF !important; }
+            .stTabs [data-baseweb="tab-list"] { background-color: transparent; }
+            .stTabs [data-baseweb="tab"] { color: #FFFFFF; }
+        </style>
+        """
+        st.markdown(css, unsafe_allow_html=True)
+    elif theme_name == '柔和护眼 (Warm)':
+        css = """
+        <style>
+            .stApp { background-color: #FAEDDF; color: #4A3A2C; }
+            [data-testid="stSidebar"] { background-color: #F0DECB; }
+            h1, h2, h3, h4, h5, h6, p, label, span { color: #4A3A2C !important; }
+            .stTabs [data-baseweb="tab-list"] { background-color: transparent; }
+            .stTabs [data-baseweb="tab"] { color: #4A3A2C; }
+        </style>
+        """
+        st.markdown(css, unsafe_allow_html=True)
+    # 默认极简不注入额外 CSS，直接使用原生样式
+
+# --- 结束主题控制逻辑 ---
+
+st.title("多糖基材料重金属吸附性能预测系统 🌿")
 st.markdown("基于机器学习框架进行理论预测，提供多模型交叉验证以供参考。")
 
 with st.sidebar:
+    # 新增：侧边栏主题选择器
+    st.subheader("🎨 界面设置")
+    selected_theme = st.radio(
+        "选择主题风格：",
+        ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'),
+        index=0
+    )
+    apply_custom_theme(selected_theme)
+    
+    st.markdown("---")
     st.subheader("预测引擎设置")
     best_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
     selected_model = st.selectbox("选择主预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
