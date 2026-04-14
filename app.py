@@ -174,12 +174,12 @@ def apply_custom_theme(theme_name):
 
 # --- 结束主题控制逻辑 ---
 
-st.title("多糖基材料重金属吸附性能预测系统 🌿")
+st.title("多糖基材料重金属吸附性能预测系统")
 st.markdown("基于机器学习框架进行理论预测，提供多模型交叉验证以供参考。")
 
 with st.sidebar:
     # 新增：侧边栏主题选择器
-    st.subheader("🎨 界面设置")
+    st.subheader("界面设置")
     selected_theme = st.radio(
         "选择主题风格：",
         ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'),
