@@ -114,15 +114,18 @@ models = data_pack['models']
 X_cols = data_pack['X'].columns.tolist()
 
 # ==========================================
-# 3. 界面布局 (移除图标，pH手动填充)
+# 3. 界面布局 (三界面结构)
 # ==========================================
-st.set_page_config(page_title="Qm Predictor", layout="wide")
-st.title("多糖基材料吸附量 (Qm) 智能预测系统")
+st.set_page_config(page_title="Qm Predictor", layout="centered")
+st.title("多糖基材料吸附量预测系统")
 
+# 侧边栏：选择主预测引擎
 with st.sidebar:
     st.header("预测引擎设置")
     best_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
-    selected_model = st.selectbox("选择预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
+    selected_model = st.selectbox("选择主预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
+    st.markdown("---")
+    st.markdown("系统将以该模型作为核心输出，同时在下方交叉验证区域提供其他模型的计算结果以供参考。")
 
 # 自动分类特征
 log_mapping = {
@@ -133,70 +136,101 @@ log_mapping = {
 }
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
 dom_cols = [c for c in X_cols if c.startswith('DOM_')]
-# 其他特征（如 pH, 离子强度等）
 other_cols = [c for c in X_cols if c not in log_mapping and c not in fg_cols and c not in dom_cols]
 
-col1, col2 = st.columns(2)
-
+# 初始化用户输入字典
 user_inputs = {}
 
-with col1:
-    st.subheader("基础物理化学参数")
-    # 1. 处理对数特征的原始输入
-    if 'Log_specific surface area m2/g' in X_cols:
-        val = st.number_input("比表面积 Specific Surface Area (m²/g)", value=150.0)
-        user_inputs['Log_specific surface area m2/g'] = np.log1p(val)
-    
-    if 'Log_molecular weight' in X_cols:
-        val = st.number_input("分子量 Molecular Weight (kDa)", value=300.0)
-        user_inputs['Log_molecular weight'] = np.log1p(val)
+# 使用 st.tabs 创建三个界面分区
+tab_env, tab_mat, tab_dom = st.tabs(["反应环境条件", "材料固有属性", "DOM 浓度特征"])
 
+# 界面1：反应环境条件
+with tab_env:
+    st.subheader("物理环境设置")
+    
+    # 吸附时间
     if 'Log_adsorption time min' in X_cols:
-        val = st.number_input("吸附时间 Adsorption Time (min)", value=120.0)
+        val = st.number_input("吸附时间 (min)", value=120.0, step=10.0)
         user_inputs['Log_adsorption time min'] = np.log1p(val)
 
-    # 2. 处理 pH 和 离子强度等线性特征 (自动识别)
+    # 初始浓度与投加量
+    if 'Log_C0_to_Dose_Ratio' in X_cols:
+        c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, step=5.0)
+        dose = st.number_input("投加量 Dose (mg/ml)", value=1.0, step=0.1)
+        user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
+        
+    # 其他环境特征 (pH, 离子强度等)
     for col in other_cols:
-        if col == 'Log_C0_to_Dose_Ratio': continue 
         user_inputs[col] = st.number_input(f"{col}", value=0.0, format="%.4f" if "strength" in col.lower() else "%.2f")
 
-with col2:
-    st.subheader("实验条件与官能团")
-    # 3. 特殊处理 C0/Dose 比值
-    if 'Log_C0_to_Dose_Ratio' in X_cols:
-        c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0)
-        dose = st.number_input("投加量 Dose (mg/ml)", value=1.0)
-        user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
+# 界面2：材料固有属性
+with tab_mat:
+    st.subheader("物理与结构参数")
+    
+    if 'Log_specific surface area m2/g' in X_cols:
+        val = st.number_input("比表面积 (m²/g)", value=150.0, step=10.0)
+        user_inputs['Log_specific surface area m2/g'] = np.log1p(val)
+        
+    if 'Log_molecular weight' in X_cols:
+        val = st.number_input("分子量 (kDa)", value=300.0, step=50.0)
+        user_inputs['Log_molecular weight'] = np.log1p(val)
 
-    # 4. 官能团 (Checkbox)
+    st.subheader("表面官能团 (勾选即存在)")
     if fg_cols:
-        st.write("选择存在的官能团:")
-        for fg in fg_cols:
-            user_inputs[fg] = float(st.checkbox(fg.replace('FG_', '')))
+        # 使用多列显示官能团，节约纵向空间
+        fg_layout_cols = st.columns(3)
+        for i, fg in enumerate(fg_cols):
+            with fg_layout_cols[i % 3]:
+                user_inputs[fg] = float(st.checkbox(fg.replace('FG_', '')))
 
-# 5. DOM 
-if dom_cols:
-    with st.expander("环境因子 (DOM)"):
+# 界面3：DOM浓度特征
+with tab_dom:
+    st.subheader("溶解性有机质 (DOM) 共存干扰")
+    if dom_cols:
         for dom in dom_cols:
-            user_inputs[dom] = st.number_input(dom.replace('DOM_', ''), value=0.0)
+            user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, step=1.0)
+    else:
+        st.info("模型训练数据中未检测到有效的 DOM 浓度特征列。")
 
 # ==========================================
-# 4. 预测执行
+# 4. 预测执行与多模型对比
 # ==========================================
-if st.button("开始预测"):
+st.markdown("---")
+if st.button("开始预测", use_container_width=True):
     # 构建 DataFrame 并严格对齐训练集的列顺序
     final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols, fill_value=0.0)
     
-    # 获取选中的模型 Pipeline
-    model_pipeline = models[selected_model]
-    
     try:
-        # 使用 Pipeline 预测，确保包含 StandardScaler 步骤，解决预测为 0 的问题
+        # 1. 核心模型预测
+        model_pipeline = models[selected_model]
         pred_log = model_pipeline.predict(final_df)[0]
-        prediction = np.expm1(pred_log)
+        main_prediction = np.expm1(pred_log)
         
-        st.success(f"预测完成")
-        st.metric("预测吸附量 Qm (mg/g)", f"{prediction:.4f}")
+        st.success("预测计算已完成")
+        
+        # 核心结果展示
+        st.metric(label=f"主引擎 [{selected_model}] 预测吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
+        
+        # 2. 其他模型参考对比
+        st.markdown("#### 其他模型评估参考")
+        
+        # 为了美观，使用 columns 平铺其他模型的结果
+        other_models = [m for m in models.keys() if m != selected_model]
+        
+        if other_models:
+            # 动态生成列布局，每行放 3 个模型
+            cols = st.columns(3)
+            for i, model_name in enumerate(other_models):
+                try:
+                    ref_pipeline = models[model_name]
+                    ref_pred_log = ref_pipeline.predict(final_df)[0]
+                    ref_prediction = np.expm1(ref_pred_log)
+                    
+                    with cols[i % 3]:
+                        st.info(f"**{model_name}**\n\n{ref_prediction:.4f} mg/g")
+                except Exception:
+                    with cols[i % 3]:
+                        st.warning(f"**{model_name}**\n\n计算失败")
         
     except Exception as e:
-        st.error(f"预测出错: {e}")
+        st.error(f"预测过程出错: {e}")
