@@ -209,21 +209,22 @@ with tab_env:
     col1_e, col2_e = st.columns(2)
     with col1_e:
         if 'Log_C0_to_Dose_Ratio' in X_cols:
-            c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, step=5.0)
-            dose = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, step=0.1)
+            # 补齐了 format 和 step
+            c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
+            dose = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, format="%.4f", step=0.0001)
             user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
     
     with col2_e:
         if 'Log_adsorption time min' in X_cols:
             default_time = np.expm1(get_median('Log_adsorption time min', np.log1p(120.0)))
-            val = st.number_input("吸附时间 (min)", value=float(default_time), step=10.0)
+            # 补齐了 format 和 step
+            val = st.number_input("吸附时间 (min)", value=float(default_time), format="%.4f", step=0.0001)
             user_inputs['Log_adsorption time min'] = np.log1p(val)
 
     if env_cols:
         st.markdown("---")
         st.subheader("溶液化学环境")
         for col in env_cols:
-            # 提升精度至 4 位小数，允许精确输入极小特征值
             user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0), format="%.4f", step=0.0001)
 
 # ----------------- 界面 2: 材料理化特性 -----------------
@@ -234,19 +235,20 @@ with tab_mat:
     with col1_m:
         if 'Log_specific surface area m2/g' in X_cols:
             default_ssa = np.expm1(get_median('Log_specific surface area m2/g', np.log1p(150.0)))
-            val = st.number_input("比表面积 (m²/g)", value=float(default_ssa), step=10.0)
+            # 补齐了 format 和 step
+            val = st.number_input("比表面积 (m²/g)", value=float(default_ssa), format="%.4f", step=0.0001)
             user_inputs['Log_specific surface area m2/g'] = np.log1p(val)
     with col2_m:
         if 'Log_molecular weight' in X_cols:
             default_mw = np.expm1(get_median('Log_molecular weight', np.log1p(300.0)))
-            val = st.number_input("分子量 (kDa)", value=float(default_mw), step=50.0)
+            # 补齐了 format 和 step
+            val = st.number_input("分子量 (kDa)", value=float(default_mw), format="%.4f", step=0.0001)
             user_inputs['Log_molecular weight'] = np.log1p(val)
             
     if mat_cols:
         st.markdown("---")
         st.subheader("其他物理/化学属性")
         for col in mat_cols:
-            # 同步提升连续型材料属性特征的精度至 4 位小数
             user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0), format="%.4f", step=0.0001)
 
     if fg_cols:
@@ -262,7 +264,8 @@ with tab_dom:
     st.subheader("溶解性有机质竞争干扰评估")
     if dom_cols:
         for dom in dom_cols:
-            user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, step=1.0)
+            # DOM 浓度通常可能也有小数值输入，同样解除限制
+            user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
     else:
         st.write("当前模型训练空间未包含 DOM 特征。")
 
