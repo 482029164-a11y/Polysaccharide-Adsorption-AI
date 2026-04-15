@@ -106,7 +106,7 @@ __main__.TrueTabMMini = TrueTabMMini
 @st.cache_resource
 def load_model_pack():
     # 核心修改：仅需将此处挂载点更改为 v6 即可
-    return joblib.load('model_artifacts_v9_laptop.pkl')
+    return joblib.load('model_artifacts_v6.pkl')
 
 data_pack = load_model_pack()
 models = data_pack['models']
