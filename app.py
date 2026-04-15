@@ -9,7 +9,7 @@ import os
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 1. 核心架构类声明 (补全 v16 训练时涉及的所有类定义)
+# 1. 核心架构类定义 (全量补全以支持 v16 内核加载)
 # ==========================================
 
 class StandardDNN(nn.Module):
@@ -72,7 +72,7 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# 🚀 命名空间注入：通过将定义挂载到 __main__ 彻底解决 joblib 加载失败的问题
+# 🚀 强制注入命名空间，确保 joblib 反序列化成功
 import __main__
 __main__.PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
@@ -81,114 +81,133 @@ __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
 
 # ==========================================
-# 2. 物理引导单内核加载引擎 (v16)
+# 2. 内核加载引擎
 # ==========================================
 @st.cache_resource
-def load_v16_system():
-    model_path = 'model_artifacts_v16.pkl'
-    if not os.path.exists(model_path):
-        st.error(f"严重错误：在当前目录下找不到内核文件 {model_path}。")
+def load_v16_kernel():
+    path = 'model_artifacts_v16.pkl'
+    if not os.path.exists(path):
+        st.error(f"找不到内核文件: {path}")
         st.stop()
     try:
-        pack = joblib.load(model_path)
+        pack = joblib.load(path)
         X_cols = pack['X'].columns.tolist()
         X_medians = pack['X'].median(numeric_only=True).to_dict()
-        # v16 默认使用最强的 True TabM 引擎
-        best_model = pack['models']['True TabM']
-        return X_cols, X_medians, best_model
+        # 默认调用 v16 表现最优专家
+        model = pack['models']['True TabM']
+        return X_cols, X_medians, model
     except Exception as e:
-        st.error(f"内核反序列化失败。错误详情: {e}")
+        st.error(f"内核加载失败: {e}")
         st.stop()
 
-X_cols, X_medians, model_tabm = load_v16_system()
+X_cols, X_medians, model_engine = load_v16_kernel()
 
 # ==========================================
-# 3. 页面布局与参数输入
+# 3. 页面布局与输入 (严格固定特征排版)
 # ==========================================
-st.set_page_config(page_title="污染物吸附预测系统 v16", layout="wide")
+st.set_page_config(page_title="吸附性能预测 v16", layout="wide")
 st.title("目标污染物吸附性能预测系统 (v16)")
-st.info("核心引擎：True TabM 深度强化学习网络。已集成物理特征门控机制。")
+st.info("系统状态：True TabM 专家引擎已就绪 | 物理门控机制已自动激活")
 
 user_inputs = {}
-tab1, tab2, tab3 = st.tabs(["反应条件与环境因子", "材料理化特性参数", "水体基质 (DOM) 评估"])
+# 分类列表：确保覆盖所有特征
+env_keys = ['ph', 'temp', 'speed', 'rpm', 'time', 'concentration', 'ratio', 'dose']
+mat_keys = ['surface', 'weight', 'pore', 'fg_', 'ash', 'carbon', 'oxygen', 'nitrogen']
+dom_keys = ['dom_', 'ha', 'fa', 'ca']
 
-with tab1:
-    c1, c2 = st.columns(2)
-    with c1:
-        c0_input = st.number_input("初始浓度 C0 (mg/L)", value=50.0, step=0.1, format="%.2f")
-        dose_input = st.number_input("吸附剂投加量 (mg/ml)", value=1.0, step=0.1, format="%.2f")
-        # 特征对齐逻辑：Log_C0_to_Dose_Ratio
-        user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0_input / (dose_input + 1e-7))
-    with c2:
-        time_input = st.number_input("吸附接触时间 (min)", value=120.0, step=1.0)
-        user_inputs['Log_adsorption time min'] = np.log1p(time_input)
+tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
+
+with tab_env:
+    col_e1, col_e2 = st.columns(2)
+    with col_e1:
+        c0_raw = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.2f")
+        dose_raw = st.number_input("投加量 Dose (mg/ml)", value=1.0, format="%.2f")
+        user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0_raw / (dose_raw + 1e-7))
+    with col_e2:
+        time_raw = st.number_input("吸附接触时间 (min)", value=120.0, format="%.2f")
+        user_inputs['Log_adsorption time min'] = np.log1p(time_raw)
     
-    # 环境列（如 pH, 温度, 转速）
-    env_cols = [c for c in X_cols if any(k in c.lower() for k in ['ph', 'temp', 'rpm'])]
-    for col in env_cols:
-        user_inputs[col] = st.number_input(col, value=float(X_medians.get(col, 0.0)))
+    st.markdown("---")
+    # 动态渲染其余环境特征
+    for col in X_cols:
+        col_lower = col.lower()
+        if any(k in col_lower for k in env_keys) and col not in user_inputs:
+            user_inputs[col] = st.number_input(col, value=float(X_medians.get(col, 0.0)), format="%.4f")
 
-with tab2:
-    st.markdown("##### 结构表征与官能团性质")
-    mat_cols = [c for c in X_cols if any(k in c.lower() for k in ['surface', 'weight', 'pore', 'fg_'])]
-    for col in mat_cols:
-        if col.startswith('FG_'):
-            user_inputs[col] = float(st.checkbox(col.replace('FG_', '')))
-        elif col.startswith('Log_'):
-            label = col.replace('Log_', '')
-            raw_v = st.number_input(f"请输入实测值: {label}", value=float(np.expm1(X_medians.get(col, 0.0))))
-            user_inputs[col] = np.log1p(raw_v)
-        else:
-            user_inputs[col] = st.number_input(col, value=float(X_medians.get(col, 0.0)))
+with tab_mat:
+    # 1. 结构化特征 (对数处理)
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        if 'Log_specific surface area m2/g' in X_cols:
+            ssa_raw = st.number_input("比表面积 SSA (m2/g)", value=float(np.expm1(X_medians.get('Log_specific surface area m2/g', 5.0))))
+            user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_raw)
+    with col_m2:
+        if 'Log_molecular weight' in X_cols:
+            mw_raw = st.number_input("分子量 (kDa)", value=float(np.expm1(X_medians.get('Log_molecular weight', 5.0))))
+            user_inputs['Log_molecular weight'] = np.log1p(mw_raw)
+            
+    st.markdown("---")
+    # 2. 官能团与元素组成 (FG_Phosphate 强制包含在此)
+    st.subheader("表面官能团与元素属性")
+    col_fg1, col_fg2 = st.columns(2)
+    fg_list = [c for c in X_cols if c.startswith('FG_')]
+    for i, col in enumerate(fg_list):
+        with (col_fg1 if i % 2 == 0 else col_fg2):
+            user_inputs[col] = float(st.checkbox(col.replace('FG_', ''), value=False))
+            
+    # 3. 其他理化指标
+    for col in X_cols:
+        col_lower = col.lower()
+        if any(k in col_lower for k in mat_keys) and col not in user_inputs and not col.startswith('FG_'):
+            user_inputs[col] = st.number_input(col, value=float(X_medians.get(col, 0.0)), format="%.4f")
 
-with tab3:
-    st.subheader("溶解性有机质 (DOM) 浓度输入")
-    dom_cols = [c for c in X_cols if c.startswith('DOM_')]
-    for col in dom_cols:
-        user_inputs[col] = st.number_input(f"{col.replace('DOM_', '')} (mg/L)", value=0.0)
+with tab_dom:
+    st.subheader("竞争抑制因子输入")
+    dom_list = [c for c in X_cols if c.startswith('DOM_')]
+    for col in dom_list:
+        user_inputs[col] = st.number_input(f"{col.replace('DOM_', '')} 浓度 (mg/L)", value=0.0, format="%.4f")
 
 # ==========================================
-# 4. 推理核心：物理特征门控自动植入
+# 4. 推理核心：物理门控自动注入
 # ==========================================
 st.markdown("---")
-if st.button("开始运行物理引导推理", use_container_width=True):
-    # 核心创新点：判定物理门控状态 (C0 < 10 且 HA > 0)
+if st.button("开始运行 v16 物理引导预测", use_container_width=True):
+    # 核心物理逻辑：自动判定 Physical_Gate_Inhibition
     ha_val = user_inputs.get('DOM_HA', 0.0)
-    inhibition_gate = 1.0 if (c0_input < 10.0 and ha_val > 0) else 0.0
+    # 判定准则：极低浓度 (<10) 且有腐殖酸存在时，激活抑制门控
+    gate_signal = 1.0 if (c0_raw < 10.0 and ha_val > 0) else 0.0
+    user_inputs['Physical_Gate_Inhibition'] = gate_signal
     
-    # 注入 v16 训练时新增的 Physical_Gate_Inhibition 特征列
-    user_inputs['Physical_Gate_Inhibition'] = inhibition_gate
-    
-    # 构建 DataFrame 并强制对齐训练时的特征空间顺序
+    # 构建 DataFrame 并对齐 X_cols 顺序 (无遗漏补齐)
     final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
     
-    # 填补未由界面录入的缺失列（使用训练集特征中位数）
+    # 填补可能存在的 NaN (使用训练集中位数)
     for col in X_cols:
         if pd.isna(final_df[col][0]):
             final_df[col] = X_medians.get(col, 0.0)
             
     try:
-        # 执行推理
-        pred_log = model_tabm.predict(final_df)[0]
+        # 预测并逆变换
+        pred_log = model_engine.predict(final_df)[0]
         final_qm = np.expm1(pred_log)
         
-        # 结果反馈与物理状态说明
-        if inhibition_gate > 0.5:
-            st.warning("🎯 **物理门控激活**：检测到极低浓度强竞争体系。模型已自动启动 TabM 专家权重，输出纠偏后的吸附量。")
+        # 结果展示
+        if gate_signal > 0.5:
+            st.warning("🎯 **物理门控激活**：检测到极低浓度强竞争环境。模型已启动局部抑制流形进行数值纠偏。")
         else:
-            st.success("✅ **物理状态正常**：当前处于常规热力学流形推理模式。")
+            st.success("✅ **物理状态正常**：当前处于全局热力学推理模式。")
             
-        st.metric(label="理论吸附量 Qm (mg/g)", value=f"{final_qm:.4f}")
+        st.metric(label="理论平衡吸附量 Qm (mg/g)", value=f"{final_qm:.4f}")
         
     except Exception as e:
-        st.error(f"推理引擎运行时错误: {e}")
+        st.error(f"推理引擎异常: {e}")
 
 # ==========================================
-# 5. 系统侧边栏信息
+# 5. 系统侧边栏
 # ==========================================
+st.sidebar.markdown("### 系统规格")
+st.sidebar.write("内核版本: v16.0-Final")
+st.sidebar.caption("锁定特征总数: " + str(len(X_cols)))
+st.sidebar.caption("主专家模型: True TabM (32 Heads)")
 st.sidebar.markdown("---")
-st.sidebar.write("**版本信息：v16.0 (Stable)**")
-st.sidebar.caption("更新日志：")
-st.sidebar.caption("- 物理门控特征 (Physical Gate) 全链路跑通")
-st.sidebar.caption("- 修复 Joblib 命名空间 Attribute 错误")
-st.sidebar.caption("- 强化低浓度下 HA 竞争抑制的预测精度")
+st.sidebar.caption("注意：Physical_Gate_Inhibition 是由系统根据 C0 和 DOM_HA 自动计算的掩码特征，无需手动输入。")
