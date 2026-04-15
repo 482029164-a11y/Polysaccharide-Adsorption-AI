@@ -101,7 +101,7 @@ __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
 
 # ==========================================
-# 2. 缓存加载与中位数计算引擎
+# 2. 缓存加载与中位数提取引擎
 # ==========================================
 @st.cache_resource
 def load_model_pack():
@@ -111,13 +111,12 @@ data_pack = load_model_pack()
 models = data_pack['models']
 X_cols = data_pack['X'].columns.tolist()
 
-# --- 新增：提取训练集数据并计算中位数 ---
+# --- 提取训练集数据并计算中位数 ---
 X_train_df = data_pack['X']
 X_medians = X_train_df.median(numeric_only=True).to_dict()
 
 def get_median(col_name, default_val=0.0):
     return float(X_medians.get(col_name, default_val))
-# ----------------------------------------
 
 # -- 基于材料学视角的特征分类 --
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
@@ -131,7 +130,7 @@ log_handled = [
     'Log_C0_to_Dose_Ratio'
 ]
 
-# 剩余未分类特征智能归属
+# 剩余未分类特征归属
 remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_cols and c not in log_handled]
 
 env_cols = []
@@ -139,17 +138,17 @@ mat_cols = []
 
 for col in remaining_cols:
     col_lower = col.lower()
-    # 环境与操作条件的特征词 (遵循原始代码逻辑)
-    if any(k in col_lower for k in ['ph', 'ionic', 'temp', 'speed', 'rpm']):
+    # 仅对模型数据中客观存在的特征进行分类
+    if any(k in col_lower for k in ['ph', 'temp', 'speed', 'rpm', 'time', 'concentration']):
         env_cols.append(col)
     else:
-        # 归属为材料固有物理/化学属性 (如 porosity, pore size, zeta potential, C%, N% 等)
+        # 归属为材料属性 (如 porosity, pore size, zeta potential等)
         mat_cols.append(col)
 
 # ==========================================
-# 3. 极简专业界面设计 (三标签页结构 + 动态主题)
+# 3. 界面设计 (三标签页结构)
 # ==========================================
-st.set_page_config(page_title="多糖基材料吸附性能预测", layout="centered")
+st.set_page_config(page_title="Qm Predictor", layout="wide")
 
 # --- 动态主题控制逻辑 ---
 if 'theme_choice' not in st.session_state:
@@ -180,7 +179,7 @@ def apply_custom_theme(theme_name):
         st.markdown(css, unsafe_allow_html=True)
 
 st.title("多糖基材料重金属吸附性能预测系统")
-st.markdown("基于机器学习框架进行理论预测，提供多模型交叉验证以供参考。")
+st.markdown("基于机器学习框架进行理论预测，提供多模型集成均值（Ensemble）以供参考。")
 
 with st.sidebar:
     st.subheader("界面设置")
@@ -193,9 +192,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("预测引擎设置")
-    best_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
-    selected_model = st.selectbox("选择主预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
-    st.markdown("系统将以该模型为主输出，并在预测结果下方附带其他模型的计算结果以供横向对比。")
+    st.markdown("系统将自动集成所有可用模型（Ensemble），并将它们的**数学平均值**作为最终的综合预测结果输出，以提供最稳健的理论参考。")
 
 user_inputs = {}
 
@@ -220,12 +217,12 @@ with tab_env:
             val = st.number_input("吸附时间 (min)", value=float(default_time), step=10.0)
             user_inputs['Log_adsorption time min'] = np.log1p(val)
 
-    st.markdown("---")
-    st.subheader("溶液化学环境")
-    for col in env_cols:
-        format_str = "%.4f" if "strength" in col.lower() else "%.2f"
-        # 替换为读取中位数
-        user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0), format=format_str)
+    if env_cols:
+        st.markdown("---")
+        st.subheader("溶液化学环境")
+        for col in env_cols:
+            format_str = "%.2f"
+            user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0), format=format_str)
 
 # ----------------- 界面 2: 材料理化特性 -----------------
 with tab_mat:
@@ -243,15 +240,16 @@ with tab_mat:
             val = st.number_input("分子量 (kDa)", value=float(default_mw), step=50.0)
             user_inputs['Log_molecular weight'] = np.log1p(val)
             
-    # 动态渲染其他孔结构/元素属性
+    # 动态渲染其余材料属性
     if mat_cols:
+        st.markdown("---")
+        st.subheader("其他物理/化学属性")
         for col in mat_cols:
-            # 替换为读取中位数
             user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0))
 
-    st.markdown("---")
-    st.subheader("表面化学性质 (存在勾选 1，缺失保留 0)")
     if fg_cols:
+        st.markdown("---")
+        st.subheader("表面化学性质 (存在勾选，缺失不勾选)")
         fg_layout_cols = st.columns(3)
         for i, fg in enumerate(fg_cols):
             with fg_layout_cols[i % 3]:
@@ -267,44 +265,43 @@ with tab_dom:
         st.write("当前模型训练空间未包含 DOM 特征。")
 
 # ==========================================
-# 4. 模型推理与交叉验证展示
+# 4. 模型推理与集成(Ensemble)均值展示
 # ==========================================
 st.markdown("---")
-if st.button("执行模型推理", use_container_width=True):
+if st.button("开始预测", use_container_width=True):
     # 构建 DataFrame
     final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
     
-    # --- 新增：智能缺失值兜底填充 ---
+    # --- 智能缺失值兜底填充 ---
     # 官能团和DOM填0，连续特征填中位数
     fill_dict = {c: 0.0 if (c.startswith('FG_') or c.startswith('DOM_')) else get_median(c, 0.0) for c in X_cols}
     final_df = final_df.fillna(value=fill_dict)
     
     try:
-        # 1. 主模型计算
-        model_pipeline = models[selected_model]
-        pred_log = model_pipeline.predict(final_df)[0]
-        main_prediction = np.expm1(pred_log)
-        
-        st.success("推理完成")
-        st.metric(label=f"主引擎 [{selected_model}] 预测吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
-        
-        # 2. 其他模型交叉验证参考
-        st.markdown("#### 其他模型评估参考")
-        other_models = [m for m in models.keys() if m != selected_model]
-        
-        if other_models:
+        all_preds = {}
+        # 遍历所有模型进行预测
+        for name, model_pipeline in models.items():
+            try:
+                pred_log = model_pipeline.predict(final_df)[0]
+                all_preds[name] = np.expm1(pred_log)
+            except Exception as e:
+                pass # 忽略推理失败的个别模型
+
+        if not all_preds:
+            st.error("所有模型推理均失败，请检查数据输入或环境配置。")
+        else:
+            # 1. 核心计算：所有模型的数学平均值
+            ensemble_prediction = np.mean(list(all_preds.values()))
+            
+            st.success("预测完成")
+            st.metric(label="综合集成预测吸附量 Qm (所有模型平均值, mg/g)", value=f"{ensemble_prediction:.4f}")
+            
+            # 2. 独立模型拆解参考
+            st.markdown("#### 各独立模型预测详情")
             cols = st.columns(3)
-            for i, model_name in enumerate(other_models):
-                try:
-                    ref_pipeline = models[model_name]
-                    ref_pred_log = ref_pipeline.predict(final_df)[0]
-                    ref_prediction = np.expm1(ref_pred_log)
+            for i, (model_name, pred_val) in enumerate(all_preds.items()):
+                with cols[i % 3]:
+                    st.info(f"**{model_name}**\n\n{pred_val:.4f} mg/g")
                     
-                    with cols[i % 3]:
-                        st.info(f"**{model_name}**\n\n{ref_prediction:.4f} mg/g")
-                except Exception:
-                    with cols[i % 3]:
-                        st.warning(f"**{model_name}**\n\n计算失败")
-        
     except Exception as e:
-        st.error(f"推理引擎错误: {e}")
+        st.error(f"推理引擎整体错误: {e}")
