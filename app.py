@@ -102,7 +102,7 @@ __main__.TrueTabMMini = TrueTabMMini
 def load_dual_expert_system():
     try:
         pack_normal = joblib.load('model_artifacts_v6_2.pkl')
-        pack_penalty = joblib.load('model_artifacts_v11.pkl')
+        pack_penalty = joblib.load('model_artifacts_v12.pkl')
         
         tabm_normal = pack_normal['models']['True TabM']
         tabm_penalty = pack_penalty['models']['True TabM']
