@@ -192,7 +192,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("预测引擎设置")
-    st.markdown("系统将自动集成所有可用模型（Ensemble），并将它们的**数学平均值**作为最终的综合预测结果输出，以提供最稳健的理论参考。")
+    st.markdown("系统将自动集成所有可用模型（Ensemble），采用 **IQR 统计算法** 剔除外推失真的离群模型，并将剩余稳健模型的**数学平均值**作为最终输出。")
 
 user_inputs = {}
 
@@ -265,7 +265,7 @@ with tab_dom:
         st.write("当前模型训练空间未包含 DOM 特征。")
 
 # ==========================================
-# 4. 模型推理与集成(Ensemble)均值展示
+# 4. 模型推理与稳健集成(Robust Ensemble)展示
 # ==========================================
 st.markdown("---")
 if st.button("开始预测", use_container_width=True):
@@ -290,18 +290,54 @@ if st.button("开始预测", use_container_width=True):
         if not all_preds:
             st.error("所有模型推理均失败，请检查数据输入或环境配置。")
         else:
-            # 1. 核心计算：所有模型的数学平均值
-            ensemble_prediction = np.mean(list(all_preds.values()))
+            # ---------------------------------------------------------
+            # 💡 核心修改：基于 IQR 的异常模型剔除算法
+            # ---------------------------------------------------------
+            preds_array = np.array(list(all_preds.values()))
+            q1 = np.percentile(preds_array, 25)
+            q3 = np.percentile(preds_array, 75)
+            iqr = q3 - q1
             
-            st.success("预测完成")
-            st.metric(label="综合集成预测吸附量 Qm (所有模型平均值, mg/g)", value=f"{ensemble_prediction:.4f}")
+            # 设置最小宽容度（防止所有模型预测极其接近时发生误杀）
+            tolerance = max(1.5 * iqr, 0.1 * np.median(preds_array)) 
+            lower_bound = q1 - tolerance
+            upper_bound = q3 + tolerance
             
-            # 2. 独立模型拆解参考
+            normal_preds = {}
+            outlier_preds = {}
+            
+            for m_name, p_val in all_preds.items():
+                if lower_bound <= p_val <= upper_bound:
+                    normal_preds[m_name] = p_val
+                else:
+                    outlier_preds[m_name] = p_val
+                    
+            # 极端情况兜底：如果检测算法意外剔除了所有模型，则回退为全量平均
+            if not normal_preds:
+                normal_preds = all_preds
+                outlier_preds = {}
+
+            # 计算稳健集成均值（仅针对未被剔除的模型）
+            ensemble_prediction = np.mean(list(normal_preds.values()))
+            
+            st.success("计算完成")
+            st.metric(label="综合稳健预测吸附量 Qm (剔除异常模型后的均值, mg/g)", value=f"{ensemble_prediction:.4f}")
+            
+            if outlier_preds:
+                st.warning(f"系统检测到 {len(outlier_preds)} 个模型的预测值发生严重偏离，已在底层均值计算中将其剔除。")
+            
+            # 独立模型拆解参考展示
             st.markdown("#### 各独立模型预测详情")
             cols = st.columns(3)
+            
             for i, (model_name, pred_val) in enumerate(all_preds.items()):
                 with cols[i % 3]:
-                    st.info(f"**{model_name}**\n\n{pred_val:.4f} mg/g")
+                    if model_name in outlier_preds:
+                        # 异常模型：标红警告，注明被剔除
+                        st.error(f"⚠️ **{model_name}**\n\n**{pred_val:.4f}** mg/g\n\n*(偏差过大，已自动剔除)*")
+                    else:
+                        # 正常模型：标准绿色提示框
+                        st.info(f"✅ **{model_name}**\n\n**{pred_val:.4f}** mg/g")
                     
     except Exception as e:
         st.error(f"推理引擎整体错误: {e}")
