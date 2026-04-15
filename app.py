@@ -296,7 +296,7 @@ if st.button("开始预测", use_container_width=True):
                 q3 = np.percentile(preds_array, 75)
                 iqr = q3 - q1
                 
-                tolerance = max(0.5 * iqr, 0.05 * np.median(preds_array)) 
+                tolerance = max(0.1 * iqr, 0.05 * np.median(preds_array)) 
                 lower_bound = q1 - tolerance
                 upper_bound = q3 + tolerance
                 
