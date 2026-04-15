@@ -28,7 +28,7 @@ class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
         self.epochs = epochs; self.batch_size = batch_size
         self.lr_min = lr_min; self.lr_max = lr_max
         self.T_0 = T_0; self.T_mult = T_mult
-    def fit(self, X, y): return self
+    def fit(self, X, y, sample_weight=None): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu') 
@@ -45,7 +45,7 @@ class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
     def __init__(self, k_ensembles=8, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
         self.k_ensembles = k_ensembles; self.epochs = epochs; self.batch_size = batch_size
         self.lr_min = lr_min; self.lr_max = lr_max; self.T_0 = T_0; self.T_mult = T_mult
-    def fit(self, X, y): return self
+    def fit(self, X, y, sample_weight=None): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu')
@@ -80,7 +80,7 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
         self.epochs = epochs; self.batch_size = batch_size
         self.lr_min = lr_min; self.lr_max = lr_max
         self.T_0 = T_0; self.T_mult = T_mult
-    def fit(self, X, y): return self
+    def fit(self, X, y, sample_weight=None): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu')
@@ -105,7 +105,8 @@ __main__.TrueTabMMini = TrueTabMMini
 # ==========================================
 @st.cache_resource
 def load_model_pack():
-    return joblib.load('model_artifacts_v5.pkl')
+    # 核心修改：仅需将此处挂载点更改为 v6 即可
+    return joblib.load('model_artifacts_v6.pkl')
 
 data_pack = load_model_pack()
 models = data_pack['models']
