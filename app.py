@@ -8,7 +8,7 @@ import math
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 1. 深度学习架构类声明 (必须存在以进行反序列化)
+# 1. 深度学习架构类声明 (必须存在以配合 joblib 反序列化)
 # ==========================================
 
 class StandardDNN(nn.Module):
@@ -25,9 +25,7 @@ class StandardDNN(nn.Module):
 class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
     def __init__(self, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
-        self.epochs = epochs; self.batch_size = batch_size
-        self.lr_min = lr_min; self.lr_max = lr_max
-        self.T_0 = T_0; self.T_mult = T_mult
+        pass
     def fit(self, X, y, sample_weight=None, hard_mask=None): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
@@ -42,8 +40,7 @@ class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
 class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
     def __init__(self, k_ensembles=5, epochs=200, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=40, T_mult=1.5):
-        self.k_ensembles = k_ensembles; self.epochs = epochs; self.batch_size = batch_size
-        self.lr_min = lr_min; self.lr_max = lr_max; self.T_0 = T_0; self.T_mult = T_mult
+        pass
     def fit(self, X, y, sample_weight=None, hard_mask=None): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
@@ -74,9 +71,7 @@ class TrueTabMMini(nn.Module):
 class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
     def __init__(self, epochs=200, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=40, T_mult=1.5):
-        self.epochs = epochs; self.batch_size = batch_size
-        self.lr_min = lr_min; self.lr_max = lr_max
-        self.T_0 = T_0; self.T_mult = T_mult
+        pass
     def fit(self, X, y, sample_weight=None, hard_mask=None): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
@@ -101,7 +96,9 @@ __main__.TrueTabMMini = TrueTabMMini
 @st.cache_resource
 def load_dual_expert_system():
     try:
+        # 常规流形载入 v6.2
         pack_normal = joblib.load('model_artifacts_v6_2.pkl')
+        # 极限纠偏流形载入 v12
         pack_penalty = joblib.load('model_artifacts_v12.pkl')
         
         tabm_normal = pack_normal['models']['True TabM']
@@ -111,7 +108,7 @@ def load_dual_expert_system():
         X_medians = pack_normal['X'].median(numeric_only=True).to_dict()
         return X_cols, X_medians, tabm_normal, tabm_penalty
     except FileNotFoundError as e:
-        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v10 的 pkl 文件在同级目录下。详细信息: {e}")
+        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v12 的 pkl 文件在同级目录下。详细信息: {e}")
         st.stop()
 
 X_cols, X_medians, model_normal, model_penalty = load_dual_expert_system()
@@ -151,7 +148,7 @@ with st.sidebar:
     selected_theme = st.radio("界面风格：", ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'), index=0)
     apply_custom_theme(selected_theme)
     st.markdown("---")
-    st.markdown("### 引擎状态监控\n✅ 常规热力学流 (v6.2)\n✅ 竞争抑制纠偏流 (v10)\n系统将根据输入条件自动选择最优推理流形。")
+    st.markdown("### 引擎状态监控\n✅ 常规热力学流 (v6.2)\n✅ 极限抑制纠偏流 (v12)\n系统将根据输入条件自动评估物理边界并切换最优推理流形。")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
@@ -164,7 +161,7 @@ with tab_env:
             c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
             dose = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, format="%.4f", step=0.0001)
             user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
-            user_inputs['Log_initial concentration mg/L'] = np.log1p(c0) # 用于路由判断
+            user_inputs['Log_initial concentration mg/L'] = np.log1p(c0) # 用于路由逻辑判断
     with col2_e:
         if 'Log_adsorption time min' in X_cols:
             default_time = np.expm1(get_median('Log_adsorption time min', np.log1p(120.0)))
@@ -230,16 +227,16 @@ if st.button("运行计算", use_container_width=True):
         
         # 严格遵守物理先验条件路由
         if c0_raw < 10.0 and ha_val > 0.0:
-            st.warning(f"⚠️ 物理门控触发：检测到 C0 ({c0_raw:.2f} mg/L) 属于极低浓度区域且受到 HA 竞争干扰。底层已切换至【惩罚纠偏流 True TabM (v10)】以抑制过高估计。")
+            st.warning(f"⚠️ 物理门控触发：检测到 C0 ({c0_raw:.2f} mg/L) 属于极低浓度区域且受到 HA 竞争干扰。底层已切换至【极限纠偏流 True TabM (v12)】以抑制过高估计。")
             pred_log = model_penalty.predict(final_df)[0]
-            engine_used = "True TabM - 竞争抑制纠偏专家"
+            engine_used = "True TabM - 竞争抑制纠偏专家 (v12)"
         else:
             st.success(f"✅ 物理门控触发：检测为常规浓度或纯水基质体系。底层已切换至【全局热力学流 True TabM (v6.2)】以保证流形连续性。")
             pred_log = model_normal.predict(final_df)[0]
-            engine_used = "True TabM - 全局热力学专家"
+            engine_used = "True TabM - 全局热力学专家 (v6.2)"
             
         main_prediction = np.expm1(pred_log)
         st.metric(label=f"理论吸附量 Qm (mg/g) [{engine_used}]", value=f"{main_prediction:.4f}")
         
     except Exception as e:
-        st.error(f"底层计算发生致命错误: {e}")
+        st.error(f"底层计算发生错误: {e}")
