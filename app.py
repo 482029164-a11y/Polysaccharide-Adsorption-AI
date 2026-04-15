@@ -101,7 +101,7 @@ __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
 
 # ==========================================
-# 2. 缓存加载与材料学特征分类引擎
+# 2. 缓存加载与中位数计算引擎
 # ==========================================
 @st.cache_resource
 def load_model_pack():
@@ -110,6 +110,14 @@ def load_model_pack():
 data_pack = load_model_pack()
 models = data_pack['models']
 X_cols = data_pack['X'].columns.tolist()
+
+# --- 新增：提取训练集数据并计算中位数 ---
+X_train_df = data_pack['X']
+X_medians = X_train_df.median(numeric_only=True).to_dict()
+
+def get_median(col_name, default_val=0.0):
+    return float(X_medians.get(col_name, default_val))
+# ----------------------------------------
 
 # -- 基于材料学视角的特征分类 --
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
@@ -131,7 +139,7 @@ mat_cols = []
 
 for col in remaining_cols:
     col_lower = col.lower()
-    # 环境与操作条件的特征词
+    # 环境与操作条件的特征词 (遵循原始代码逻辑)
     if any(k in col_lower for k in ['ph', 'ionic', 'temp', 'speed', 'rpm']):
         env_cols.append(col)
     else:
@@ -143,7 +151,7 @@ for col in remaining_cols:
 # ==========================================
 st.set_page_config(page_title="多糖基材料吸附性能预测", layout="centered")
 
-# --- 新增：动态主题控制逻辑 ---
+# --- 动态主题控制逻辑 ---
 if 'theme_choice' not in st.session_state:
     st.session_state.theme_choice = '默认极简 (Light)'
 
@@ -170,15 +178,11 @@ def apply_custom_theme(theme_name):
         </style>
         """
         st.markdown(css, unsafe_allow_html=True)
-    # 默认极简不注入额外 CSS，直接使用原生样式
-
-# --- 结束主题控制逻辑 ---
 
 st.title("多糖基材料重金属吸附性能预测系统")
 st.markdown("基于机器学习框架进行理论预测，提供多模型交叉验证以供参考。")
 
 with st.sidebar:
-    # 新增：侧边栏主题选择器
     st.subheader("界面设置")
     selected_theme = st.radio(
         "选择主题风格：",
@@ -211,14 +215,17 @@ with tab_env:
     
     with col2_e:
         if 'Log_adsorption time min' in X_cols:
-            val = st.number_input("吸附时间 (min)", value=120.0, step=10.0)
+            # 还原对数值并用作默认显示
+            default_time = np.expm1(get_median('Log_adsorption time min', np.log1p(120.0)))
+            val = st.number_input("吸附时间 (min)", value=float(default_time), step=10.0)
             user_inputs['Log_adsorption time min'] = np.log1p(val)
 
     st.markdown("---")
     st.subheader("溶液化学环境")
     for col in env_cols:
         format_str = "%.4f" if "strength" in col.lower() else "%.2f"
-        user_inputs[col] = st.number_input(f"{col}", value=0.0, format=format_str)
+        # 替换为读取中位数
+        user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0), format=format_str)
 
 # ----------------- 界面 2: 材料理化特性 -----------------
 with tab_mat:
@@ -227,17 +234,20 @@ with tab_mat:
     col1_m, col2_m = st.columns(2)
     with col1_m:
         if 'Log_specific surface area m2/g' in X_cols:
-            val = st.number_input("比表面积 (m²/g)", value=150.0, step=10.0)
+            default_ssa = np.expm1(get_median('Log_specific surface area m2/g', np.log1p(150.0)))
+            val = st.number_input("比表面积 (m²/g)", value=float(default_ssa), step=10.0)
             user_inputs['Log_specific surface area m2/g'] = np.log1p(val)
     with col2_m:
         if 'Log_molecular weight' in X_cols:
-            val = st.number_input("分子量 (kDa)", value=300.0, step=50.0)
+            default_mw = np.expm1(get_median('Log_molecular weight', np.log1p(300.0)))
+            val = st.number_input("分子量 (kDa)", value=float(default_mw), step=50.0)
             user_inputs['Log_molecular weight'] = np.log1p(val)
             
     # 动态渲染其他孔结构/元素属性
     if mat_cols:
         for col in mat_cols:
-            user_inputs[col] = st.number_input(f"{col}", value=0.0)
+            # 替换为读取中位数
+            user_inputs[col] = st.number_input(f"{col}", value=get_median(col, 0.0))
 
     st.markdown("---")
     st.subheader("表面化学性质 (存在勾选 1，缺失保留 0)")
@@ -261,8 +271,13 @@ with tab_dom:
 # ==========================================
 st.markdown("---")
 if st.button("执行模型推理", use_container_width=True):
-    # 构建 DataFrame，缺失值补零，且严格按模型所需列名排序
-    final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols, fill_value=0.0)
+    # 构建 DataFrame
+    final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
+    
+    # --- 新增：智能缺失值兜底填充 ---
+    # 官能团和DOM填0，连续特征填中位数
+    fill_dict = {c: 0.0 if (c.startswith('FG_') or c.startswith('DOM_')) else get_median(c, 0.0) for c in X_cols}
+    final_df = final_df.fillna(value=fill_dict)
     
     try:
         # 1. 主模型计算
