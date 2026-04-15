@@ -299,7 +299,7 @@ if st.button("开始预测", use_container_width=True):
             iqr = q3 - q1
             
             # 将 IQR 乘数降至 1.0，最低容忍误差降至 5%
-            tolerance = max(0.8 * iqr, 0.02 * np.median(preds_array))
+            tolerance = max(0.1 * iqr, 0.02 * np.median(preds_array))
             lower_bound = q1 - tolerance
             upper_bound = q3 + tolerance
             
