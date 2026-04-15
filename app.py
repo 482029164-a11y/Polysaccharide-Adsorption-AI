@@ -292,4 +292,4 @@ if st.button("执行模型推理", use_container_width=True):
                         st.warning(f"**{model_name}**\n\n计算失败")
         
     except Exception as e:
-        st.error(f"推理引擎错误: {e}")默认填充0是不是不妥当，应该填充中位数或者平均数？
+        st.error(f"推理引擎错误: {e}")
