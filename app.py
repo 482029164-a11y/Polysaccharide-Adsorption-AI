@@ -92,7 +92,7 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# 命名空间注入，防止 joblib 找不到类
+# 命名空间注入
 import __main__
 __main__.PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
@@ -105,8 +105,7 @@ __main__.TrueTabMMini = TrueTabMMini
 # ==========================================
 @st.cache_resource
 def load_model_pack():
-    # 核心修改：挂载刚跑出来的 v4 物理交叉特征模型
-    return joblib.load('model_artifacts_v4.pkl')
+    return joblib.load('model_artifacts_v5.pkl')
 
 data_pack = load_model_pack()
 models = data_pack['models']
@@ -118,17 +117,14 @@ X_medians = X_train_df.median(numeric_only=True).to_dict()
 def get_median(col_name, default_val=0.0):
     return float(X_medians.get(col_name, default_val))
 
-# -- 基于材料学视角的特征分类 --
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
 dom_cols = [c for c in X_cols if c.startswith('DOM_')]
 
-# 新增注册：包含物理交叉特征 HA_to_C0_Ratio
 log_handled = [
     'Log_specific surface area m2/g', 
     'Log_molecular weight', 
     'Log_adsorption time min', 
-    'Log_C0_to_Dose_Ratio',
-    'Log_HA_to_C0_Ratio'
+    'Log_C0_to_Dose_Ratio'
 ]
 
 remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_cols and c not in log_handled]
@@ -144,7 +140,7 @@ for col in remaining_cols:
         mat_cols.append(col)
 
 # ==========================================
-# 3. 界面设计 (三标签页结构)
+# 3. 界面设计
 # ==========================================
 st.set_page_config(page_title="Qm Predictor", layout="wide")
 
@@ -175,8 +171,8 @@ def apply_custom_theme(theme_name):
         """
         st.markdown(css, unsafe_allow_html=True)
 
-st.title("多糖基材料重金属吸附性能预测系统")
-st.markdown("基于机器学习框架进行理论预测，支持化学物理交叉特征约束。")
+st.title("目标污染物吸附性能预测系统")
+st.markdown("基于机器学习框架进行理论预测，支持高维特征映射分析。")
 
 with st.sidebar:
     st.subheader("界面设置")
@@ -191,27 +187,21 @@ with st.sidebar:
     st.subheader("预测引擎设置")
     best_name = max(data_pack['results'], key=lambda k: data_pack['results'][k]['OOF R2'])
     selected_model = st.selectbox("选择主预测模型", list(models.keys()), index=list(models.keys()).index(best_name))
-    st.markdown("系统将以该模型为主输出，并在预测结果下方附带其他模型的计算结果以供横向对比。")
+    st.markdown("系统将以该模型为主输出，并在下方附带其他模型的计算结果以供横向对比。")
 
 user_inputs = {}
-# 初始化全局 C0 变量，用于后续跨界面计算 HA_to_C0_Ratio
-global_c0 = 50.0 
 
-# 核心三板块标签页
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
 
 # ----------------- 界面 1: 环境与操作条件 -----------------
 with tab_env:
     st.subheader("热力学与动力学操作参数")
-    
     col1_e, col2_e = st.columns(2)
     with col1_e:
-        # C0 的输入被捕获到 global_c0 中
-        global_c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
-        dose = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, format="%.4f", step=0.0001)
         if 'Log_C0_to_Dose_Ratio' in X_cols:
-            user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(global_c0 / (dose + 1e-5))
-    
+            c0 = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
+            dose = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, format="%.4f", step=0.0001)
+            user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / (dose + 1e-5))
     with col2_e:
         if 'Log_adsorption time min' in X_cols:
             default_time = np.expm1(get_median('Log_adsorption time min', np.log1p(120.0)))
@@ -227,7 +217,6 @@ with tab_env:
 # ----------------- 界面 2: 材料理化特性 -----------------
 with tab_mat:
     st.subheader("形貌与高分子特性")
-    
     col1_m, col2_m = st.columns(2)
     with col1_m:
         if 'Log_specific surface area m2/g' in X_cols:
@@ -259,12 +248,7 @@ with tab_dom:
     st.subheader("溶解性有机质竞争干扰评估")
     if dom_cols:
         for dom in dom_cols:
-            val_dom = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
-            user_inputs[dom] = val_dom
-            
-            # 核心修改：动态捕获 HA 浓度并结合 C0 生成耦合比值特征
-            if dom == 'DOM_HA' and 'Log_HA_to_C0_Ratio' in X_cols:
-                user_inputs['Log_HA_to_C0_Ratio'] = np.log1p(val_dom / (global_c0 + 1e-5))
+            user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
     else:
         st.write("当前模型训练空间未包含 DOM 特征。")
 
@@ -273,15 +257,11 @@ with tab_dom:
 # ==========================================
 st.markdown("---")
 if st.button("开始预测", use_container_width=True):
-    # 构建 DataFrame 并进行严格校验
     final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
-    
-    # 智能缺失值兜底填充：官能团和DOM填0，连续特征填中位数
     fill_dict = {c: 0.0 if (c.startswith('FG_') or c.startswith('DOM_')) else get_median(c, 0.0) for c in X_cols}
     final_df = final_df.fillna(value=fill_dict)
     
     try:
-        # 1. 独立主模型计算输出
         main_model_pipeline = models[selected_model]
         pred_log = main_model_pipeline.predict(final_df)[0]
         main_prediction = np.expm1(pred_log)
@@ -289,7 +269,6 @@ if st.button("开始预测", use_container_width=True):
         st.success("计算完成")
         st.metric(label=f"主引擎 [{selected_model}] 预测吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
         
-        # 2. 其他模型参考输出
         st.markdown("#### 其他模型评估参考")
         other_models = [m for m in models.keys() if m != selected_model]
         
@@ -300,7 +279,6 @@ if st.button("开始预测", use_container_width=True):
                     ref_pipeline = models[model_name]
                     ref_pred_log = ref_pipeline.predict(final_df)[0]
                     ref_prediction = np.expm1(ref_pred_log)
-                    
                     with cols[i % 3]:
                         st.info(f"✅ **{model_name}**\n\n**{ref_prediction:.4f}** mg/g")
                 except Exception:
