@@ -7,12 +7,13 @@ import torch.nn as nn
 import math
 import os
 from sklearn.base import BaseEstimator, RegressorMixin
+# 必须导入 ColumnTransformer 防止 joblib 无法解析 pipeline
+from sklearn.compose import ColumnTransformer
 
 # ==========================================
-# 1. 核心架构类声明 (v27 Symbolic PINN 严格兼容版)
+# 1. 核心架构类声明 (v28)
 # ==========================================
 
-# --- 基础网络组件 ---
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
         super().__init__()
@@ -24,7 +25,6 @@ class StandardDNN(nn.Module):
         )
     def forward(self, x): return self.network(x)
 
-# --- v6.2 常规热力学专家核心 ---
 class TrueTabMMini(nn.Module):
     def __init__(self, input_dim=70, hidden_dim=128, k_ensembles=32, dropout=0.1):
         super().__init__()
@@ -57,9 +57,9 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# --- v27 显式符号物理方程纠偏专家核心 (Symbolic PINN) ---
+# --- v28 显式物理免检专家 ---
 class GatedTrueTabMMini(nn.Module):
-    def __init__(self, input_dim, pro_idx, inh_idx, hidden_dim=256, k_ensembles=32, dropout=0.1):
+    def __init__(self, input_dim, pro_idx=-2, inh_idx=-1, hidden_dim=256, k_ensembles=32, dropout=0.1):
         super().__init__()
         self.k_ensembles = k_ensembles
         self.pro_idx = pro_idx
@@ -78,8 +78,7 @@ class GatedTrueTabMMini(nn.Module):
         self.head_weights = nn.Parameter(torch.randn(k_ensembles, hidden_dim // 2) / math.sqrt(hidden_dim // 2))
         self.head_biases = nn.Parameter(torch.zeros(k_ensembles))
         
-        # 🔥 v27: 显式物理阻力权重参数对齐
-        self.promo_scale = nn.Parameter(torch.tensor([2.0]))
+        self.promo_scale = nn.Parameter(torch.tensor([1.0]))
         self.inhib_scale = nn.Parameter(torch.tensor([1.0]))
 
     def forward(self, x):
@@ -88,21 +87,19 @@ class GatedTrueTabMMini(nn.Module):
         out = self.shared_bottom(x_expanded)
         deep_out = (out * self.head_weights).sum(dim=-1) + self.head_biases
         
-        # 精准定位张量内部的特征并执行显式强制计算
         pro_feature = x[:, self.pro_idx].unsqueeze(-1)
         inh_feature = x[:, self.inh_idx].unsqueeze(-1)
         
         promo_effect = torch.abs(self.promo_scale) * pro_feature
         inhib_effect = torch.abs(self.inhib_scale) * inh_feature
         
-        # 强制加减方向
-        final_out = deep_out + promo_effect - inhib_effect
-        return final_out
+        return deep_out + promo_effect - inhib_effect
 
 class PyTorchGatedTabM(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
-    def __init__(self, epochs=150, batch_size=32, lr=0.002):
+    def __init__(self, epochs=150, batch_size=32, lr=0.002, pro_idx=-2, inh_idx=-1):
         self.epochs = epochs; self.batch_size = batch_size; self.lr = lr
+        self.pro_idx = pro_idx; self.inh_idx = inh_idx
     def fit(self, X, y=None, **kwargs): return self
     def __sklearn_is_fitted__(self): return True
     def predict(self, X):
@@ -115,7 +112,6 @@ class PyTorchGatedTabM(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# --- 其他防报错占位类 ---
 class PyTorchSingleDNN(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
     def __init__(self, epochs=80, batch_size=32, lr=0.001):
@@ -146,7 +142,6 @@ class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
     def __sklearn_is_fitted__(self): return True
     def predict(self, X): pass
 
-# 🚀 全域挂载：确保 Joblib 读取时类定义完全对齐
 import __main__
 __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
@@ -159,38 +154,36 @@ __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
 __main__.PyTorchDeepEnsembleRegressor = PyTorchDeepEnsembleRegressor
 
 # ==========================================
-# 2. 双路模型加载 (v6.2 & v27)
+# 2. 双路模型加载 (v6.2 & v28)
 # ==========================================
 @st.cache_resource
 def load_dual_expert_system():
     try:
         pack_normal = joblib.load('model_artifacts_v6_2.pkl')
-        pack_penalty = joblib.load('model_artifacts_v27.pkl')
+        pack_penalty = joblib.load('model_artifacts_v28.pkl')
         
         tabm_normal = pack_normal['models']['True TabM']
-        # 对应 v27 保存时的键名
-        tabm_penalty = pack_penalty['models']['True TabM (Symbolic PINN v27)']
+        tabm_penalty = pack_penalty['models']['True TabM (Stable PINN v28)']
         
-        X_cols_v27 = pack_penalty['X'].columns.tolist()
+        X_cols_v28 = pack_penalty['X'].columns.tolist()
         X_cols_v62 = pack_normal['X'].columns.tolist()
         X_medians = pack_penalty['X'].median(numeric_only=True).to_dict()
         
-        return X_cols_v27, X_cols_v62, X_medians, tabm_normal, tabm_penalty
+        return X_cols_v28, X_cols_v62, X_medians, tabm_normal, tabm_penalty
     except Exception as e:
-        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v27 的 pkl 文件在同级目录下。详细信息: {e}")
+        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v28 的 pkl 文件在同级目录下。详细信息: {e}")
         st.stop()
 
-X_cols_v27, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
+X_cols_v28, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
 
 def get_median(col_name):
     return float(X_medians.get(col_name, 0.0))
 
-# 这些显式物理特征对于网络计算必不可少，但不需要展示给前端用户
 hidden_cols = ['Physical_Gate_Inhibition', 'HA_Bridging_Promotion', 'HA_Competitive_Inhibition', 'Asymptotic_Inhibition_Force']
-fg_cols = [c for c in X_cols_v27 if c.startswith('FG_')]
-dom_cols = [c for c in X_cols_v27 if c.startswith('DOM_')]
+fg_cols = [c for c in X_cols_v28 if c.startswith('FG_')]
+dom_cols = [c for c in X_cols_v28 if c.startswith('DOM_')]
 log_handled = ['Log_specific surface area m2/g', 'Log_molecular weight', 'Log_adsorption time min', 'Log_C0_to_Dose_Ratio']
-remaining_cols = [c for c in X_cols_v27 if c not in fg_cols and c not in dom_cols and c not in log_handled and c not in hidden_cols]
+remaining_cols = [c for c in X_cols_v28 if c not in fg_cols and c not in dom_cols and c not in log_handled and c not in hidden_cols]
 
 env_cols, mat_cols = [], []
 for col in remaining_cols:
@@ -202,7 +195,7 @@ for col in remaining_cols:
 # ==========================================
 # 3. UI 界面布局
 # ==========================================
-st.set_page_config(page_title="Qm Predictor (v27 显式物理方程版)", layout="wide")
+st.set_page_config(page_title="Qm Predictor (v28 稳定免检版)", layout="wide")
 
 def apply_custom_theme(theme_name):
     if theme_name == '暗夜深邃 (Dark)':
@@ -211,14 +204,14 @@ def apply_custom_theme(theme_name):
         st.markdown("<style>.stApp { background-color: #FAEDDF; color: #4A3A2C; }</style>", unsafe_allow_html=True)
 
 st.title("目标污染物吸附性能预测系统")
-st.markdown("基于物理先验引导的混合专家模型 (Hard-Routing MoE)，集成 **v27 显式符号物理方程嵌入 (Symbolic PINN)** 的 Gated TabM 引擎。")
+st.markdown("基于物理先验引导的混合专家模型 (Hard-Routing MoE)，集成 **v28 绿色免检通道机制 (Stable PINN)** 的 Gated TabM 引擎。")
 
 with st.sidebar:
     st.subheader("系统控制")
     selected_theme = st.radio("界面风格：", ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'), index=0)
     apply_custom_theme(selected_theme)
     st.markdown("---")
-    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 显式方程专家: Gated TabM (v27)\n系统将自动推演双态物理力场，直接从网络末端硬性拉升或坍缩预测值。")
+    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 免检物理专家: Gated TabM (v28)\n物理特征现已完全免于标准化失真，精准执行加减法运算。")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
@@ -242,12 +235,12 @@ with tab_env:
 with tab_mat:
     col1_m, col2_m = st.columns(2)
     with col1_m:
-        if 'Log_specific surface area m2/g' in X_cols_v27:
+        if 'Log_specific surface area m2/g' in X_cols_v28:
             ssa_def = np.expm1(get_median('Log_specific surface area m2/g'))
             ssa_v = st.number_input("比表面积 (m2/g)", value=float(ssa_def if ssa_def > 0 else 150.0), format="%.4f", step=0.0001)
             user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_v)
     with col2_m:
-        if 'Log_molecular weight' in X_cols_v27:
+        if 'Log_molecular weight' in X_cols_v28:
             mw_def = np.expm1(get_median('Log_molecular weight'))
             mw_v = st.number_input("分子量 (kDa)", value=float(mw_def if mw_def > 0 else 300.0), format="%.4f", step=0.0001)
             user_inputs['Log_molecular weight'] = np.log1p(mw_v)
@@ -278,25 +271,23 @@ if st.button("运行混合专家系统", use_container_width=True):
     
     try:
         if c0_raw < 10.0 and ha_val > 0.0:
-            # v27 核心公式演算与前置特征注入
+            # 演算机制不动，但网络层已免疫标准化污染
             bridging_promo = np.exp(-((ha_val - 10.0)**2) / 5.0) if c0_raw < 10.0 else 0.0
             comp_inhib = max(0.0, ha_val - 10.0) * (1.0 - np.tanh(c0_raw / 10.0))
             
             st.warning(f"⚠️ 物理门控已激活：检测到极低浓度且存在 HA 竞争。")
-            st.info(f"🧠 系统演算：提取架桥促进特征 {bridging_promo:.4f}，提取竞争抑制特征 {comp_inhib:.4f}。底层已切换至【v27 显式符号 PINN 专家】进行直接物理运算。")
+            st.info(f"🧠 系统演算：提取架桥促进特征 {bridging_promo:.4f}，提取竞争抑制特征 {comp_inhib:.4f}。底层已切换至【v28 免检物理专家】进行直接且安全的物理加减。")
             
             user_inputs['Physical_Gate_Inhibition'] = 1.0
             user_inputs['HA_Bridging_Promotion'] = bridging_promo
             user_inputs['HA_Competitive_Inhibition'] = comp_inhib
             
-            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v27)
-            for col in X_cols_v27:
+            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v28)
+            for col in X_cols_v28:
                 if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
             
-            # 模型执行 predict 时，标准化流程完毕后的特征张量将被送入 forward，
-            # 内部会自动根据索引抓取这两个物理特征，应用 promo_scale 和 inhib_scale，执行显式方程
             pred_log = model_penalty.predict(final_df)[0]
-            engine_used = "v27 Gated-TabM (Symbolic PINN 强制干预模式)"
+            engine_used = "v28 Gated-TabM (Stable PINN 免疫标准化模式)"
             
         else:
             st.success(f"✅ 物理状态稳定：检测为常规浓度或纯水基质。底层切换至【v6.2 全局热力学专家】以保证流形的平滑预测。")
