@@ -55,8 +55,6 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# 将训练脚本和 app.py 中的 GatedTrueTabMMini 类替换为以下完整版本：
-
 class GatedTrueTabMMini(nn.Module):
     def __init__(self, input_dim, hidden_dim=256, k_ensembles=32, dropout=0.1):
         super().__init__()
@@ -73,21 +71,14 @@ class GatedTrueTabMMini(nn.Module):
         )
         self.head_weights = nn.Parameter(torch.randn(k_ensembles, hidden_dim // 2) / math.sqrt(hidden_dim // 2))
         self.head_biases = nn.Parameter(torch.zeros(k_ensembles))
-        
-        # v25：物理残差直连 (Wide & Deep Architecture)
         self.wide_linear = nn.Linear(input_dim, 1)
 
     def forward(self, x):
         gate = self.feature_gate(x)
-        x_gated = x * gate
-        x_expanded = x_gated.unsqueeze(1) * self.R
+        x_expanded = (x * gate).unsqueeze(1) * self.R
         out = self.shared_bottom(x_expanded)
         deep_out = (out * self.head_weights).sum(dim=-1) + self.head_biases
-        
-        # 🔥 核心修复：保持宽网络的输出维度为 [Batch_Size, 1]
-        # 这样在与 deep_out [Batch_Size, 32] 相加时，PyTorch 会正确地将其广播到所有 Ensemble Head 上
         wide_out = self.wide_linear(x)
-        
         return deep_out + wide_out
 
 class PyTorchGatedTabM(BaseEstimator, RegressorMixin):
@@ -105,7 +96,6 @@ class PyTorchGatedTabM(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# --- 其他防报错占位类 ---
 class PyTorchSingleDNN(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
     def __init__(self, epochs=80, batch_size=32, lr=0.001):
@@ -148,36 +138,36 @@ __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
 __main__.PyTorchDeepEnsembleRegressor = PyTorchDeepEnsembleRegressor
 
 # ==========================================
-# 2. 双路模型加载 (v6.2 & v25)
+# 2. 双路模型加载 (v6.2 & v26)
 # ==========================================
 @st.cache_resource
 def load_dual_expert_system():
     try:
         pack_normal = joblib.load('model_artifacts_v6_2.pkl')
-        pack_penalty = joblib.load('model_artifacts_v25.pkl')
+        pack_penalty = joblib.load('model_artifacts_v26.pkl')
         
         tabm_normal = pack_normal['models']['True TabM']
-        tabm_penalty = pack_penalty['models']['True TabM (Wide-Deep v25)']
+        tabm_penalty = pack_penalty['models']['True TabM (Dual-Anchor v26)']
         
-        X_cols_v25 = pack_penalty['X'].columns.tolist()
+        X_cols_v26 = pack_penalty['X'].columns.tolist()
         X_cols_v62 = pack_normal['X'].columns.tolist()
         X_medians = pack_penalty['X'].median(numeric_only=True).to_dict()
         
-        return X_cols_v25, X_cols_v62, X_medians, tabm_normal, tabm_penalty
+        return X_cols_v26, X_cols_v62, X_medians, tabm_normal, tabm_penalty
     except Exception as e:
-        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v25 的 pkl 文件在同级目录下。详细信息: {e}")
+        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v26 的 pkl 文件在同级目录下。详细信息: {e}")
         st.stop()
 
-X_cols_v25, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
+X_cols_v26, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
 
 def get_median(col_name):
     return float(X_medians.get(col_name, 0.0))
 
 hidden_cols = ['Physical_Gate_Inhibition', 'HA_Bridging_Promotion', 'HA_Competitive_Inhibition', 'Asymptotic_Inhibition_Force']
-fg_cols = [c for c in X_cols_v25 if c.startswith('FG_')]
-dom_cols = [c for c in X_cols_v25 if c.startswith('DOM_')]
+fg_cols = [c for c in X_cols_v26 if c.startswith('FG_')]
+dom_cols = [c for c in X_cols_v26 if c.startswith('DOM_')]
 log_handled = ['Log_specific surface area m2/g', 'Log_molecular weight', 'Log_adsorption time min', 'Log_C0_to_Dose_Ratio']
-remaining_cols = [c for c in X_cols_v25 if c not in fg_cols and c not in dom_cols and c not in log_handled and c not in hidden_cols]
+remaining_cols = [c for c in X_cols_v26 if c not in fg_cols and c not in dom_cols and c not in log_handled and c not in hidden_cols]
 
 env_cols, mat_cols = [], []
 for col in remaining_cols:
@@ -189,7 +179,7 @@ for col in remaining_cols:
 # ==========================================
 # 3. UI 界面布局
 # ==========================================
-st.set_page_config(page_title="Qm Predictor (v25 灰盒残差版)", layout="wide")
+st.set_page_config(page_title="Qm Predictor (v26 双锚点隔离版)", layout="wide")
 
 def apply_custom_theme(theme_name):
     if theme_name == '暗夜深邃 (Dark)':
@@ -198,20 +188,19 @@ def apply_custom_theme(theme_name):
         st.markdown("<style>.stApp { background-color: #FAEDDF; color: #4A3A2C; }</style>", unsafe_allow_html=True)
 
 st.title("目标污染物吸附性能预测系统")
-st.markdown("基于物理先验引导的混合专家模型 (Hard-Routing MoE)，集成 **v25 Wide&Deep 物理残差直连** 的 Gated TabM 引擎。")
+st.markdown("基于物理先验引导的混合专家模型 (Hard-Routing MoE)，集成 **v26 双锚点独立保护** 的 Gated TabM 引擎。")
 
 with st.sidebar:
     st.subheader("系统控制")
     selected_theme = st.radio("界面风格：", ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'), index=0)
     apply_custom_theme(selected_theme)
     st.markdown("---")
-    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 灰盒专家: Gated TabM (v25)\n系统将自动推演双态物理力场，执行残差网络干预。")
+    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 灰盒专家: Gated TabM (v26)\n系统执行双向锚点机制：同时保护 HA=10 架桥峰并执行 HA=30 坍缩压制。")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
 
 with tab_env:
-    st.subheader("热力学与动力学操作参数")
     col1_e, col2_e = st.columns(2)
     with col1_e:
         c0_raw = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
@@ -224,40 +213,35 @@ with tab_env:
 
     if env_cols:
         st.markdown("---")
-        st.subheader("溶液化学环境")
         for col in env_cols:
             user_inputs[col] = st.number_input(col, value=get_median(col), format="%.4f", step=0.0001)
 
 with tab_mat:
-    st.subheader("形貌与高分子特性")
     col1_m, col2_m = st.columns(2)
     with col1_m:
-        if 'Log_specific surface area m2/g' in X_cols_v25:
+        if 'Log_specific surface area m2/g' in X_cols_v26:
             ssa_def = np.expm1(get_median('Log_specific surface area m2/g'))
             ssa_v = st.number_input("比表面积 (m2/g)", value=float(ssa_def if ssa_def > 0 else 150.0), format="%.4f", step=0.0001)
             user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_v)
     with col2_m:
-        if 'Log_molecular weight' in X_cols_v25:
+        if 'Log_molecular weight' in X_cols_v26:
             mw_def = np.expm1(get_median('Log_molecular weight'))
             mw_v = st.number_input("分子量 (kDa)", value=float(mw_def if mw_def > 0 else 300.0), format="%.4f", step=0.0001)
             user_inputs['Log_molecular weight'] = np.log1p(mw_v)
             
     if mat_cols:
         st.markdown("---")
-        st.subheader("其他物理/化学属性")
         for col in mat_cols:
             user_inputs[col] = st.number_input(col, value=get_median(col), format="%.4f", step=0.0001)
 
     if fg_cols:
         st.markdown("---")
-        st.subheader("表面化学性质 (勾选代表存在)")
         fg_layout_cols = st.columns(3)
         for i, fg in enumerate(fg_cols):
             with fg_layout_cols[i % 3]:
                 user_inputs[fg] = float(st.checkbox(fg.replace('FG_', '')))
 
 with tab_dom:
-    st.subheader("溶解性有机质竞争干扰评估")
     if dom_cols:
         for dom in dom_cols:
             user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
@@ -275,18 +259,18 @@ if st.button("运行混合专家系统", use_container_width=True):
             comp_inhib = max(0.0, ha_val - 10.0) * (1.0 - np.tanh(c0_raw / 10.0))
             
             st.warning(f"⚠️ 物理门控已激活：检测到极低浓度且存在 HA 竞争。")
-            st.info(f"🧠 系统演算：已计算出当前 HA_架桥促进指数为 {bridging_promo:.4f}，HA_竞争抑制指数为 {comp_inhib:.4f}。底层已切换至【v25 灰盒物理残差专家】。")
+            st.info(f"🧠 系统演算：已计算出当前 HA_架桥促进指数为 {bridging_promo:.4f}，HA_竞争抑制指数为 {comp_inhib:.4f}。底层已切换至【v26 双锚点保护专家】。")
             
             user_inputs['Physical_Gate_Inhibition'] = 1.0
             user_inputs['HA_Bridging_Promotion'] = bridging_promo
             user_inputs['HA_Competitive_Inhibition'] = comp_inhib
             
-            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v25)
-            for col in X_cols_v25:
+            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v26)
+            for col in X_cols_v26:
                 if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
             
             pred_log = model_penalty.predict(final_df)[0]
-            engine_used = "v25 Gated-TabM (Wide&Deep 灰盒直连模式)"
+            engine_used = "v26 Gated-TabM (双向锚点隔离模式)"
             
         else:
             st.success(f"✅ 物理状态稳定：检测为常规浓度或纯水基质。底层切换至【v6.2 全局热力学专家】以保证流形的平滑预测。")
