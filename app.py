@@ -9,7 +9,7 @@ import os
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 1. 核心架构类声明 (必须兼容 v6.2 与 v17 双内核)
+# 1. 核心架构类声明 (兼容 v6.2 与 v18 全系模型)
 # ==========================================
 
 # --- 基础组件 ---
@@ -24,7 +24,7 @@ class StandardDNN(nn.Module):
         )
     def forward(self, x): return self.network(x)
 
-# --- v6.2 常规热力学流形核心 ---
+# --- v6.2 常规热力学专家核心 ---
 class TrueTabMMini(nn.Module):
     def __init__(self, input_dim=70, hidden_dim=128, k_ensembles=32, dropout=0.1):
         super().__init__()
@@ -53,7 +53,7 @@ class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# --- v17 极限纠偏流形核心 (Gated 架构) ---
+# --- v18 阶梯极值纠偏专家核心 (Gated 架构) ---
 class GatedTrueTabMMini(nn.Module):
     def __init__(self, input_dim, hidden_dim=256, k_ensembles=32, dropout=0.1):
         super().__init__()
@@ -88,7 +88,7 @@ class PyTorchGatedTabM(BaseEstimator, RegressorMixin):
             preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
         return np.clip(preds, 0.0, 6.5)
 
-# --- 兼容其他模型的占位与预测定义 (防 joblib 报错) ---
+# --- 其他对比基线模型的防报错占位 ---
 class PyTorchSingleDNN(BaseEstimator, RegressorMixin):
     def predict(self, X): pass
 class PyTorchDeepEnsemble(BaseEstimator, RegressorMixin):
@@ -98,7 +98,7 @@ class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
 class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
     def predict(self, X): pass
 
-# 🚀 注入 __main__ 命名空间
+# 🚀 全域挂载：确保 Joblib 读取时类定义完全对齐
 import __main__
 __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
@@ -111,51 +111,51 @@ __main__.PyTorchStandardRegressor = PyTorchStandardRegressor
 __main__.PyTorchDeepEnsembleRegressor = PyTorchDeepEnsembleRegressor
 
 # ==========================================
-# 2. 双路专家加载引擎 (v6.2 & v17)
+# 2. 双路模型加载 (v6.2 & v18)
 # ==========================================
 @st.cache_resource
 def load_dual_expert_system():
     try:
-        # 路径 1: 常规流形 (v6.2)
+        # 常规模型 (无门控)
         pack_normal = joblib.load('model_artifacts_v6_2.pkl')
-        # 路径 2: 特征门控纠偏流形 (v17)
-        pack_penalty = joblib.load('model_artifacts_v17.pkl')
+        # v18 连续抑制力模型
+        pack_penalty = joblib.load('model_artifacts_v18.pkl')
         
         tabm_normal = pack_normal['models']['True TabM']
-        tabm_penalty = pack_penalty['models']['True TabM (Gated v17)']
+        tabm_penalty = pack_penalty['models']['True TabM (Gated v18)']
         
-        X_cols_v17 = pack_penalty['X'].columns.tolist()
+        X_cols_v18 = pack_penalty['X'].columns.tolist()
         X_cols_v62 = pack_normal['X'].columns.tolist()
         X_medians = pack_penalty['X'].median(numeric_only=True).to_dict()
         
-        return X_cols_v17, X_cols_v62, X_medians, tabm_normal, tabm_penalty
+        return X_cols_v18, X_cols_v62, X_medians, tabm_normal, tabm_penalty
     except Exception as e:
-        st.error(f"内核加载失败。请确保同级目录下有 v6_2 和 v17 的 pkl 文件。详情: {e}")
+        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v18 的 pkl 文件在同级目录下。详细信息: {e}")
         st.stop()
 
-X_cols_v17, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
+X_cols_v18, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
 
 def get_median(col_name):
     return float(X_medians.get(col_name, 0.0))
 
-# 动态特征归类 (以 v17 最全特征集为基准，排除后台控制列)
-fg_cols = [c for c in X_cols_v17 if c.startswith('FG_')]
-dom_cols = [c for c in X_cols_v17 if c.startswith('DOM_')]
+# 分离前端不需要渲染的隐式特征
+hidden_cols = ['Physical_Gate_Inhibition', 'Asymptotic_Inhibition_Force']
+fg_cols = [c for c in X_cols_v18 if c.startswith('FG_')]
+dom_cols = [c for c in X_cols_v18 if c.startswith('DOM_')]
 log_handled = ['Log_specific surface area m2/g', 'Log_molecular weight', 'Log_adsorption time min', 'Log_C0_to_Dose_Ratio']
-remaining_cols = [c for c in X_cols_v17 if c not in fg_cols and c not in dom_cols and c not in log_handled and c != 'Physical_Gate_Inhibition']
+remaining_cols = [c for c in X_cols_v18 if c not in fg_cols and c not in dom_cols and c not in log_handled and c not in hidden_cols]
 
 env_cols, mat_cols = [], []
 for col in remaining_cols:
-    col_lower = col.lower()
-    if any(k in col_lower for k in ['ph', 'temp', 'speed', 'rpm', 'time', 'concentration']):
+    if any(k in col.lower() for k in ['ph', 'temp', 'speed', 'rpm', 'time', 'concentration']):
         env_cols.append(col)
     else:
         mat_cols.append(col)
 
 # ==========================================
-# 3. 界面排版锁定
+# 3. UI 界面布局
 # ==========================================
-st.set_page_config(page_title="Qm Predictor (Dual-MoE v17)", layout="wide")
+st.set_page_config(page_title="Qm Predictor (v18 阶梯纠偏版)", layout="wide")
 
 def apply_custom_theme(theme_name):
     if theme_name == '暗夜深邃 (Dark)':
@@ -164,14 +164,14 @@ def apply_custom_theme(theme_name):
         st.markdown("<style>.stApp { background-color: #FAEDDF; color: #4A3A2C; }</style>", unsafe_allow_html=True)
 
 st.title("目标污染物吸附性能预测系统")
-st.markdown("基于物理先验引导的混合专家模型 (Hard-Routing MoE)，集成 **Gated-TabM (v17)** 作为极值纠偏引擎。")
+st.markdown("基于物理先验引导的混合专家模型 (Hard-Routing MoE)，集成 **v18 连续渐进抑制力场** 的 Gated TabM 引擎。")
 
 with st.sidebar:
     st.subheader("系统控制")
     selected_theme = st.radio("界面风格：", ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'), index=0)
     apply_custom_theme(selected_theme)
     st.markdown("---")
-    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 纠偏专家: Gated TabM (v17)\n物理门控将根据 C0 与 HA 浓度自动执行路由。")
+    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 纠偏专家: Gated TabM (v18)\n系统将自动演算 `Asymptotic Inhibition Force` 并调配预测流。")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
@@ -198,12 +198,12 @@ with tab_mat:
     st.subheader("形貌与高分子特性")
     col1_m, col2_m = st.columns(2)
     with col1_m:
-        if 'Log_specific surface area m2/g' in X_cols_v17:
+        if 'Log_specific surface area m2/g' in X_cols_v18:
             ssa_def = np.expm1(get_median('Log_specific surface area m2/g'))
             ssa_v = st.number_input("比表面积 (m2/g)", value=float(ssa_def if ssa_def > 0 else 150.0), format="%.4f", step=0.0001)
             user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_v)
     with col2_m:
-        if 'Log_molecular weight' in X_cols_v17:
+        if 'Log_molecular weight' in X_cols_v18:
             mw_def = np.expm1(get_median('Log_molecular weight'))
             mw_v = st.number_input("分子量 (kDa)", value=float(mw_def if mw_def > 0 else 300.0), format="%.4f", step=0.0001)
             user_inputs['Log_molecular weight'] = np.log1p(mw_v)
@@ -229,39 +229,46 @@ with tab_dom:
             user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
 
 # ==========================================
-# 4. 双路硬路由推理核心
+# 4. 双路硬路由与物理公式演算
 # ==========================================
 st.markdown("---")
-if st.button("运行预测引擎", use_container_width=True):
+if st.button("运行混合专家系统", use_container_width=True):
     ha_val = user_inputs.get('DOM_HA', 0.0)
     
     try:
-        # 核心物理边界判定
+        # 路由判定：极低浓度伴随干扰
         if c0_raw < 10.0 and ha_val > 0.0:
-            st.warning(f"⚠️ 物理门控触发：检测到 C0 ({c0_raw:.2f} mg/L) 属于极低浓度区域且伴随 HA 竞争干扰。底层调度已将张量流重定向至【极值纠偏专家 Gated-TabM (v17)】，特征注意力门控已开启。")
+            # v18 核心演算法：计算渐进抑制力场
+            inhibition_force = ha_val * (1.0 - np.tanh(c0_raw / 10.0))
             
-            # v17 推理要求显式写入物理抑制特征
+            st.warning(f"⚠️ 物理门控已激活：检测到极低浓度且存在 HA 竞争。")
+            st.info(f"🧠 系统演算：由于 C0 ({c0_raw:.2f}) 极低，模型判定 HA 络合屏蔽作用巨大。已计算出当前渐进抑制力场为 {inhibition_force:.2f}。底层已切换至【v18 阶梯纠偏专家】进行强效下压。")
+            
+            # 向字典注入隐式计算的物理特征
             user_inputs['Physical_Gate_Inhibition'] = 1.0
-            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v17)
-            # 安全填补
-            for col in X_cols_v17:
+            user_inputs['Asymptotic_Inhibition_Force'] = inhibition_force
+            
+            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v18)
+            for col in X_cols_v18:
                 if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
             
             pred_log = model_penalty.predict(final_df)[0]
-            engine_used = "v17 Gated 流形 (特征关注强化)"
-        else:
-            st.success(f"✅ 物理门控就绪：检测为常规热力学空间。底层调度已将张量流重定向至【全局连续专家 True TabM (v6.2)】。")
+            engine_used = "v18 Gated-TabM (阶梯抑制力模式)"
             
-            # v6.2 推理：严格对齐老版本的特征空间维度
+        else:
+            st.success(f"✅ 物理状态稳定：检测为常规浓度或纯水基质。底层切换至【v6.2 全局热力学专家】以保证流形的平滑预测。")
+            
+            # v6.2 没有这些门控特征，严格对齐老版本维度
             final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v62)
             for col in X_cols_v62:
                 if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
                 
             pred_log = model_normal.predict(final_df)[0]
-            engine_used = "v6.2 全局流形"
+            engine_used = "v6.2 全局流形专家"
             
         main_prediction = np.expm1(pred_log)
-        st.metric(label=f"理论平衡吸附量 Qm (mg/g) [调度内核：{engine_used}]", value=f"{main_prediction:.4f}")
+        st.metric(label=f"预测理论平衡吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
+        st.caption(f"当前执行内核: {engine_used}")
         
     except Exception as e:
-        st.error(f"算力引擎调度失败，原因: {e}")
+        st.error(f"引擎调度失败: {e}")
