@@ -93,11 +93,30 @@ X_cols, X_medians, models_dict = load_v31_system()
 def get_median(col_name):
     return float(X_medians.get(col_name, 0.0))
 
-# 分离特征展示
+# ==========================================
+# 🚀 UI 去重与特征智能拦截机制
+# ==========================================
+# 我们在后台全自动计算这些特征的 Log 和 Ratio，绝对不让它们出现在前端的循环输入框里
+hidden_auto_calc_cols = [
+    'initial concentration mg/L', 
+    'Log_initial concentration mg/L',
+    'adsorbent dose mg/ml', 
+    'Log_adsorbent dose mg/ml',
+    'C0_to_Dose_Ratio',
+    'Log_C0_to_Dose_Ratio',
+    'adsorption time min',
+    'Log_adsorption time min',
+    'specific surface area m2/g',
+    'Log_specific surface area m2/g',
+    'molecular weight',
+    'Log_molecular weight'
+]
+
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
 dom_ratio_cols = [c for c in X_cols if '_to_C0_Ratio' in c]
-log_handled = ['Log_specific surface area m2/g', 'Log_molecular weight', 'Log_adsorption time min', 'Log_C0_to_Dose_Ratio']
-remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_ratio_cols and c not in log_handled and not c.startswith('DOM_')]
+
+# 剩余未被特殊处理的列，才允许动态生成输入框
+remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_ratio_cols and c not in hidden_auto_calc_cols and not c.startswith('DOM_')]
 
 env_cols, mat_cols = [], []
 for col in remaining_cols:
@@ -109,7 +128,7 @@ for col in remaining_cols:
 # ==========================================
 # 3. UI 界面布局
 # ==========================================
-st.set_page_config(page_title="Qm Predictor (V31 化学先验版)", layout="wide")
+st.set_page_config(page_title="Qm Predictor (智能前端版)", layout="wide")
 
 def apply_custom_theme(theme_name):
     if theme_name == '暗夜深邃 (Dark)':
@@ -126,10 +145,9 @@ with st.sidebar:
     apply_custom_theme(selected_theme)
     st.markdown("---")
     st.subheader("🧠 推断引擎选择")
-    # 让用户可以随时切换五大模型对比
     selected_model_name = st.selectbox("请选择底层机器学习算法:", list(models_dict.keys()), index=4)
     st.markdown("---")
-    st.markdown("✅ 数据管道纯净化\n✅ 物理门控已下线\n✅ 化学先验特征交叉已激活")
+    st.markdown("✅ UI智能去重生效\n✅ 自动对数对齐引擎开启\n✅ 化学先验特征交叉已激活")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
@@ -139,10 +157,22 @@ with tab_env:
     with col1_e:
         c0_raw = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
         dose_raw = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, format="%.4f", step=0.0001)
+        
+        # 🛡️ 核心修复 1：在后台算尽所有组合，堵死报错可能性
+        user_inputs['initial concentration mg/L'] = c0_raw
+        user_inputs['Log_initial concentration mg/L'] = np.log1p(c0_raw)
+        user_inputs['adsorbent dose mg/ml'] = dose_raw
+        user_inputs['Log_adsorbent dose mg/ml'] = np.log1p(dose_raw)
+        user_inputs['C0_to_Dose_Ratio'] = c0_raw / (dose_raw + 1e-7)
         user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0_raw / (dose_raw + 1e-7))
+        
     with col2_e:
-        default_time = np.expm1(get_median('Log_adsorption time min'))
+        # 智能提取默认值
+        default_time = np.expm1(get_median('Log_adsorption time min')) if get_median('Log_adsorption time min') > 0 else get_median('adsorption time min')
         time_raw = st.number_input("吸附时间 (min)", value=float(default_time if default_time > 0 else 120.0), format="%.4f", step=0.0001)
+        
+        # 🛡️ 核心修复 2：后台自动处理对数
+        user_inputs['adsorption time min'] = time_raw
         user_inputs['Log_adsorption time min'] = np.log1p(time_raw)
 
     if env_cols:
@@ -153,15 +183,16 @@ with tab_env:
 with tab_mat:
     col1_m, col2_m = st.columns(2)
     with col1_m:
-        if 'Log_specific surface area m2/g' in X_cols:
-            ssa_def = np.expm1(get_median('Log_specific surface area m2/g'))
-            ssa_v = st.number_input("比表面积 (m2/g)", value=float(ssa_def if ssa_def > 0 else 150.0), format="%.4f", step=0.0001)
-            user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_v)
+        ssa_def = np.expm1(get_median('Log_specific surface area m2/g')) if get_median('Log_specific surface area m2/g') > 0 else get_median('specific surface area m2/g')
+        ssa_v = st.number_input("比表面积 (m2/g)", value=float(ssa_def if ssa_def > 0 else 150.0), format="%.4f", step=0.0001)
+        user_inputs['specific surface area m2/g'] = ssa_v
+        user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_v)
+        
     with col2_m:
-        if 'Log_molecular weight' in X_cols:
-            mw_def = np.expm1(get_median('Log_molecular weight'))
-            mw_v = st.number_input("分子量 (kDa)", value=float(mw_def if mw_def > 0 else 300.0), format="%.4f", step=0.0001)
-            user_inputs['Log_molecular weight'] = np.log1p(mw_v)
+        mw_def = np.expm1(get_median('Log_molecular weight')) if get_median('Log_molecular weight') > 0 else get_median('molecular weight')
+        mw_v = st.number_input("分子量 (kDa)", value=float(mw_def if mw_def > 0 else 300.0), format="%.4f", step=0.0001)
+        user_inputs['molecular weight'] = mw_v
+        user_inputs['Log_molecular weight'] = np.log1p(mw_v)
             
     if mat_cols:
         st.markdown("---")
@@ -177,7 +208,6 @@ with tab_mat:
 
 with tab_dom:
     dom_raw_inputs = {}
-    # 动态捕获模型需要的 DOM 种类 (支持 HA, FA, CA 等)
     expected_doms = [c.replace('Log_', '').replace('_to_C0_Ratio', '') for c in dom_ratio_cols]
     
     if expected_doms:
@@ -185,38 +215,36 @@ with tab_dom:
             dom_raw_inputs[dom] = st.number_input(f"{dom} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
 
 # ==========================================
-# 4. 纯净化学推断执行
+# 4. 纯净推断执行
 # ==========================================
 st.markdown("---")
 if st.button(f"运行 [{selected_model_name}]", use_container_width=True):
     try:
-        # 🔥 V31 核心逻辑：在前端仅作无量纲化学交叉，绝不干涉模型权重
+        # 在后台计算化学先验比值
         for dom, dom_conc in dom_raw_inputs.items():
-            # 恢复训练时的数据流对齐
             user_inputs[f'DOM_{dom}'] = dom_conc
             user_inputs[f'Log_{dom}_to_C0_Ratio'] = np.log1p(dom_conc / (c0_raw + 1e-6))
 
-        # 整理张量
+        # 整理张量，缺失值自动补齐
         final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
         for col in X_cols:
             if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
         
-        # 提取选定的模型
+        # 提取选定的模型执行推断
         active_model = models_dict[selected_model_name]
-        
-        # 纯净推断
         pred_log = active_model.predict(final_df)[0]
         main_prediction = np.expm1(pred_log)
         
         st.success("✅ 推断完成！")
         st.metric(label=f"预测理论平衡吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
         
-        # 调试/展示信息
-        with st.expander("🔍 查看化学先验特征解析状态"):
+        # 化学先验状态透明化展示
+        with st.expander("🔍 查看后台解析状态 (化学计量比引擎)"):
+            st.write(f"**初始输入浓度 C0:** `{c0_raw:.4f} mg/L`")
             for dom in expected_doms:
                 ratio_val = user_inputs[f'Log_{dom}_to_C0_Ratio']
-                st.write(f"**{dom}/C0 对数计量比 (Log_Ratio):** `{ratio_val:.4f}`")
-            st.caption("注：模型完全依赖上述化学先验比例自主判定系统处于架桥主导（低比值突变）还是位阻主导（高比值坍缩）状态，已剥离所有人工硬编码干预。")
+                st.write(f"**{dom}/C0 对数配位比:** `{ratio_val:.4f}`")
+            st.caption("注：模型完全依赖底层权重自主识别特征响应，前端已剥离所有人工规则与惩罚补丁，保证预测 100% 数据驱动。")
             
     except Exception as e:
         st.error(f"引擎调度失败: {e}")
