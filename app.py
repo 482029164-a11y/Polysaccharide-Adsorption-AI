@@ -9,7 +9,7 @@ import os
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 1. 核心架构类声明 (V31 纯净版，严密对齐训练内核)
+# 1. 核心架构类声明 (V32 纯净回归版)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -75,20 +75,20 @@ __main__.PyTorchSingleDNN = PyTorchSingleDNN
 __main__.PyTorchDeepEnsemble = PyTorchDeepEnsemble
 
 # ==========================================
-# 2. 模型加载 (V31 纯净先验版)
+# 2. 模型加载 (V32 热力学锚点版)
 # ==========================================
 @st.cache_resource
-def load_v31_system():
+def load_v32_system():
     try:
-        pack = joblib.load('model_artifacts_v31.pkl')
+        pack = joblib.load('model_artifacts_v32.pkl')
         X_cols = pack['X'].columns.tolist()
         X_medians = pack['X'].median(numeric_only=True).to_dict()
         return X_cols, X_medians, pack['models']
     except Exception as e:
-        st.error(f"严重错误：找不到内核文件 model_artifacts_v31.pkl。详细信息: {e}")
+        st.error(f"严重错误：找不到内核文件 model_artifacts_v32.pkl。详细信息: {e}")
         st.stop()
 
-X_cols, X_medians, models_dict = load_v31_system()
+X_cols, X_medians, models_dict = load_v32_system()
 
 def get_median(col_name):
     return float(X_medians.get(col_name, 0.0))
@@ -96,7 +96,7 @@ def get_median(col_name):
 # ==========================================
 # 🚀 UI 去重与特征智能拦截机制
 # ==========================================
-# 我们在后台全自动计算这些特征的 Log 和 Ratio，绝对不让它们出现在前端的循环输入框里
+# 后台全自动计算对数与比值，前端界面隐去这些组合变量
 hidden_auto_calc_cols = [
     'initial concentration mg/L', 
     'Log_initial concentration mg/L',
@@ -115,7 +115,7 @@ hidden_auto_calc_cols = [
 fg_cols = [c for c in X_cols if c.startswith('FG_')]
 dom_ratio_cols = [c for c in X_cols if '_to_C0_Ratio' in c]
 
-# 剩余未被特殊处理的列，才允许动态生成输入框
+# 提取真正的独立输入特征
 remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_ratio_cols and c not in hidden_auto_calc_cols and not c.startswith('DOM_')]
 
 env_cols, mat_cols = [], []
@@ -128,7 +128,7 @@ for col in remaining_cols:
 # ==========================================
 # 3. UI 界面布局
 # ==========================================
-st.set_page_config(page_title="Qm Predictor (智能前端版)", layout="wide")
+st.set_page_config(page_title="Qm Predictor (V32 旗舰版)", layout="wide")
 
 def apply_custom_theme(theme_name):
     if theme_name == '暗夜深邃 (Dark)':
@@ -137,7 +137,7 @@ def apply_custom_theme(theme_name):
         st.markdown("<style>.stApp { background-color: #FAEDDF; color: #4A3A2C; }</style>", unsafe_allow_html=True)
 
 st.title("目标污染物吸附性能预测系统")
-st.markdown("基于领域先验引导的机器学习平台。内核集成 **DOM/重金属化学计量比 (Stoichiometric Ratio)** 显式映射，无需硬编码即可自动感知极端热力学突变。")
+st.markdown("基于 **化学先验特征工程 (Stoichiometric Ratio)** 与 **代价敏感热力学锚点 (Cost-Sensitive Anchor)** 双重驱动的机器学习平台。")
 
 with st.sidebar:
     st.subheader("系统控制")
@@ -147,7 +147,7 @@ with st.sidebar:
     st.subheader("🧠 推断引擎选择")
     selected_model_name = st.selectbox("请选择底层机器学习算法:", list(models_dict.keys()), index=4)
     st.markdown("---")
-    st.markdown("✅ UI智能去重生效\n✅ 自动对数对齐引擎开启\n✅ 化学先验特征交叉已激活")
+    st.markdown("✅ UI智能降噪脱水\n✅ V32 热力学锚点内核就绪\n✅ 前端物理惩罚逻辑已完全剥离")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
@@ -158,7 +158,7 @@ with tab_env:
         c0_raw = st.number_input("初始浓度 C0 (mg/L)", value=50.0, format="%.4f", step=0.0001)
         dose_raw = st.number_input("吸附剂投加量 Dose (mg/ml)", value=1.0, format="%.4f", step=0.0001)
         
-        # 🛡️ 核心修复 1：在后台算尽所有组合，堵死报错可能性
+        # 后台自动派生全量 C0/Dose 特征
         user_inputs['initial concentration mg/L'] = c0_raw
         user_inputs['Log_initial concentration mg/L'] = np.log1p(c0_raw)
         user_inputs['adsorbent dose mg/ml'] = dose_raw
@@ -167,11 +167,8 @@ with tab_env:
         user_inputs['Log_C0_to_Dose_Ratio'] = np.log1p(c0_raw / (dose_raw + 1e-7))
         
     with col2_e:
-        # 智能提取默认值
         default_time = np.expm1(get_median('Log_adsorption time min')) if get_median('Log_adsorption time min') > 0 else get_median('adsorption time min')
         time_raw = st.number_input("吸附时间 (min)", value=float(default_time if default_time > 0 else 120.0), format="%.4f", step=0.0001)
-        
-        # 🛡️ 核心修复 2：后台自动处理对数
         user_inputs['adsorption time min'] = time_raw
         user_inputs['Log_adsorption time min'] = np.log1p(time_raw)
 
@@ -208,6 +205,7 @@ with tab_mat:
 
 with tab_dom:
     dom_raw_inputs = {}
+    # 动态捕获模型期望的 DOM 种类
     expected_doms = [c.replace('Log_', '').replace('_to_C0_Ratio', '') for c in dom_ratio_cols]
     
     if expected_doms:
@@ -220,17 +218,17 @@ with tab_dom:
 st.markdown("---")
 if st.button(f"运行 [{selected_model_name}]", use_container_width=True):
     try:
-        # 在后台计算化学先验比值
+        # 在后台动态计算多重 DOM / C0 配位比值
         for dom, dom_conc in dom_raw_inputs.items():
             user_inputs[f'DOM_{dom}'] = dom_conc
             user_inputs[f'Log_{dom}_to_C0_Ratio'] = np.log1p(dom_conc / (c0_raw + 1e-6))
 
-        # 整理张量，缺失值自动补齐
+        # 结构化张量并补齐未命中值
         final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
         for col in X_cols:
             if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
         
-        # 提取选定的模型执行推断
+        # 加载并预测
         active_model = models_dict[selected_model_name]
         pred_log = active_model.predict(final_df)[0]
         main_prediction = np.expm1(pred_log)
@@ -238,13 +236,13 @@ if st.button(f"运行 [{selected_model_name}]", use_container_width=True):
         st.success("✅ 推断完成！")
         st.metric(label=f"预测理论平衡吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
         
-        # 化学先验状态透明化展示
-        with st.expander("🔍 查看后台解析状态 (化学计量比引擎)"):
+        # 内部状态透视
+        with st.expander("🔍 查看后台解析状态 (化学先验引擎)"):
             st.write(f"**初始输入浓度 C0:** `{c0_raw:.4f} mg/L`")
             for dom in expected_doms:
                 ratio_val = user_inputs[f'Log_{dom}_to_C0_Ratio']
                 st.write(f"**{dom}/C0 对数配位比:** `{ratio_val:.4f}`")
-            st.caption("注：模型完全依赖底层权重自主识别特征响应，前端已剥离所有人工规则与惩罚补丁，保证预测 100% 数据驱动。")
+            st.caption("注：模型通过训练时的热力学锚点加权（Cost-Sensitive Anchors），已自主学得高配位比下的严重物理坍缩效应，前端无需任何硬编码补偿。")
             
     except Exception as e:
         st.error(f"引擎调度失败: {e}")
