@@ -7,12 +7,10 @@ import torch.nn as nn
 import math
 import os
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.compose import ColumnTransformer
 
 # ==========================================
-# 1. 核心架构类声明 (严密对齐 v28 的 PINN 架构)
+# 1. 核心架构类声明 (V31 纯净版，严密对齐训练内核)
 # ==========================================
-
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
         super().__init__()
@@ -25,7 +23,7 @@ class StandardDNN(nn.Module):
     def forward(self, x): return self.network(x)
 
 class TrueTabMMini(nn.Module):
-    def __init__(self, input_dim=70, hidden_dim=128, k_ensembles=32, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim=128, k_ensembles=32, dropout=0.1):
         super().__init__()
         self.k_ensembles = k_ensembles
         self.R = nn.Parameter(torch.ones(1, k_ensembles, input_dim) + torch.randn(1, k_ensembles, input_dim) * 0.01)
@@ -43,144 +41,63 @@ class TrueTabMMini(nn.Module):
 
 class PyTorchTrueTabMRegressor(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
-    def __init__(self, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5):
-        self.epochs = epochs; self.batch_size = batch_size; self.lr_min = lr_min; self.lr_max = lr_max; self.T_0 = T_0; self.T_mult = T_mult
     def fit(self, X, y=None, **kwargs): return self
-    def __sklearn_is_fitted__(self): return True
     def predict(self, X):
         device = torch.device('cpu')
-        if hasattr(self, 'model_'):
-            self.model_.to(device); self.model_.eval()
-        X_t = torch.tensor(X.values if isinstance(X, pd.DataFrame) else X, dtype=torch.float32).to(device)
-        with torch.no_grad():
-            preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
-        return np.clip(preds, 0.0, 6.5)
-
-class GatedTrueTabMMini(nn.Module):
-    def __init__(self, input_dim, pro_idx=-2, inh_idx=-1, hidden_dim=256, k_ensembles=32, dropout=0.1):
-        super().__init__()
-        self.k_ensembles = k_ensembles
-        self.pro_idx = pro_idx
-        self.inh_idx = inh_idx
-        
-        self.feature_gate = nn.Sequential(
-            nn.Linear(input_dim, input_dim // 2), nn.ReLU(),
-            nn.Linear(input_dim // 2, input_dim), nn.Sigmoid()
-        )
-        self.R = nn.Parameter(torch.ones(1, k_ensembles, input_dim) + torch.randn(1, k_ensembles, input_dim) * 0.01)
-        self.shared_bottom = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim // 2), nn.LayerNorm(hidden_dim // 2), nn.ReLU(),
-            nn.Dropout(max(0, dropout - 0.1))
-        )
-        self.head_weights = nn.Parameter(torch.randn(k_ensembles, hidden_dim // 2) / math.sqrt(hidden_dim // 2))
-        self.head_biases = nn.Parameter(torch.zeros(k_ensembles))
-        
-        self.promo_scale = nn.Parameter(torch.tensor([1.0]))
-        self.inhib_scale = nn.Parameter(torch.tensor([1.0]))
-
-    def forward(self, x):
-        gate = self.feature_gate(x)
-        x_expanded = (x * gate).unsqueeze(1) * self.R
-        out = self.shared_bottom(x_expanded)
-        deep_out = (out * self.head_weights).sum(dim=-1) + self.head_biases
-        
-        pro_feature = x[:, self.pro_idx].unsqueeze(-1)
-        inh_feature = x[:, self.inh_idx].unsqueeze(-1)
-        promo_effect = torch.abs(self.promo_scale) * pro_feature
-        inhib_effect = torch.abs(self.inhib_scale) * inh_feature
-        
-        return deep_out + promo_effect - inhib_effect
-
-class PyTorchGatedTabM(BaseEstimator, RegressorMixin):
-    _estimator_type = "regressor"
-    def __init__(self, epochs=150, batch_size=32, lr=0.002, pro_idx=-2, inh_idx=-1):
-        self.epochs = epochs; self.batch_size = batch_size; self.lr = lr
-        self.pro_idx = pro_idx; self.inh_idx = inh_idx
-    def fit(self, X, y=None, **kwargs): return self
-    def __sklearn_is_fitted__(self): return True
-    def predict(self, X):
-        device = torch.device('cpu')
-        if hasattr(self, 'model_'):
-            self.model_.to(device); self.model_.eval()
-        X_v = X.values if hasattr(X, 'values') else X
-        X_t = torch.tensor(X_v, dtype=torch.float32).to(device)
-        with torch.no_grad():
-            preds = self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
-        return np.clip(preds, 0.0, 6.5)
+        if hasattr(self, 'model_'): self.model_.to(device); self.model_.eval()
+        X_t = torch.tensor(X.values if hasattr(X, 'values') else X, dtype=torch.float32).to(device)
+        with torch.no_grad(): return self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
 
 class PyTorchSingleDNN(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
-    def __init__(self, epochs=80, batch_size=32, lr=0.001):
-        self.epochs = epochs; self.batch_size = batch_size; self.lr = lr
     def fit(self, X, y=None, **kwargs): return self
-    def __sklearn_is_fitted__(self): return True
-    def predict(self, X): pass
+    def predict(self, X):
+        device = torch.device('cpu')
+        if hasattr(self, 'model_'): self.model_.to(device); self.model_.eval()
+        X_t = torch.tensor(X.values if hasattr(X, 'values') else X, dtype=torch.float32).to(device)
+        with torch.no_grad(): return self.model_(X_t).cpu().numpy().flatten()
 
 class PyTorchDeepEnsemble(BaseEstimator, RegressorMixin):
     _estimator_type = "regressor"
-    def __init__(self, k=3, epochs=80, batch_size=32, lr=0.001):
-        self.k = k; self.epochs = epochs; self.batch_size = batch_size; self.lr = lr
     def fit(self, X, y=None, **kwargs): return self
-    def __sklearn_is_fitted__(self): return True
-    def predict(self, X): pass
-
-class PyTorchStandardRegressor(BaseEstimator, RegressorMixin):
-    _estimator_type = "regressor"
-    def __init__(self, epochs=250, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=50, T_mult=1.5): pass
-    def fit(self, X, y=None, **kwargs): return self
-    def __sklearn_is_fitted__(self): return True
-    def predict(self, X): pass
-
-class PyTorchDeepEnsembleRegressor(BaseEstimator, RegressorMixin):
-    _estimator_type = "regressor"
-    def __init__(self, k_ensembles=5, epochs=200, batch_size=32, lr_min=0.0001, lr_max=0.002, T_0=40, T_mult=1.5): pass
-    def fit(self, X, y=None, **kwargs): return self
-    def __sklearn_is_fitted__(self): return True
-    def predict(self, X): pass
+    def predict(self, X):
+        device = torch.device('cpu')
+        X_t = torch.tensor(X.values if hasattr(X, 'values') else X, dtype=torch.float32).to(device)
+        for m in self.models_: m.to(device); m.eval()
+        with torch.no_grad():
+            return torch.cat([m(X_t) for m in self.models_], dim=1).mean(dim=1).cpu().numpy().flatten()
 
 import __main__
 __main__.StandardDNN = StandardDNN
 __main__.TrueTabMMini = TrueTabMMini
 __main__.PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
-__main__.GatedTrueTabMMini = GatedTrueTabMMini
-__main__.PyTorchGatedTabM = PyTorchGatedTabM
 __main__.PyTorchSingleDNN = PyTorchSingleDNN
 __main__.PyTorchDeepEnsemble = PyTorchDeepEnsemble
-__main__.PyTorchStandardRegressor = PyTorchStandardRegressor
-__main__.PyTorchDeepEnsembleRegressor = PyTorchDeepEnsembleRegressor
 
 # ==========================================
-# 2. 双路模型加载 
+# 2. 模型加载 (V31 纯净先验版)
 # ==========================================
 @st.cache_resource
-def load_dual_expert_system():
+def load_v31_system():
     try:
-        pack_normal = joblib.load('model_artifacts_v6_2.pkl')
-        pack_penalty = joblib.load('model_artifacts_v28.pkl')
-        
-        tabm_normal = pack_normal['models']['True TabM']
-        tabm_penalty = pack_penalty['models']['True TabM (Stable PINN v28)']
-        
-        X_cols_v28 = pack_penalty['X'].columns.tolist()
-        X_cols_v62 = pack_normal['X'].columns.tolist()
-        X_medians = pack_penalty['X'].median(numeric_only=True).to_dict()
-        
-        return X_cols_v28, X_cols_v62, X_medians, tabm_normal, tabm_penalty
+        pack = joblib.load('model_artifacts_v31.pkl')
+        X_cols = pack['X'].columns.tolist()
+        X_medians = pack['X'].median(numeric_only=True).to_dict()
+        return X_cols, X_medians, pack['models']
     except Exception as e:
-        st.error(f"严重错误：找不到内核文件。确保 v6_2 和 v28 的 pkl 文件在同级目录下。详细信息: {e}")
+        st.error(f"严重错误：找不到内核文件 model_artifacts_v31.pkl。详细信息: {e}")
         st.stop()
 
-X_cols_v28, X_cols_v62, X_medians, model_normal, model_penalty = load_dual_expert_system()
+X_cols, X_medians, models_dict = load_v31_system()
 
 def get_median(col_name):
     return float(X_medians.get(col_name, 0.0))
 
-hidden_cols = ['Physical_Gate_Inhibition', 'HA_Bridging_Promotion', 'HA_Competitive_Inhibition', 'Asymptotic_Inhibition_Force']
-fg_cols = [c for c in X_cols_v28 if c.startswith('FG_')]
-dom_cols = [c for c in X_cols_v28 if c.startswith('DOM_')]
+# 分离特征展示
+fg_cols = [c for c in X_cols if c.startswith('FG_')]
+dom_ratio_cols = [c for c in X_cols if '_to_C0_Ratio' in c]
 log_handled = ['Log_specific surface area m2/g', 'Log_molecular weight', 'Log_adsorption time min', 'Log_C0_to_Dose_Ratio']
-remaining_cols = [c for c in X_cols_v28 if c not in fg_cols and c not in dom_cols and c not in log_handled and c not in hidden_cols]
+remaining_cols = [c for c in X_cols if c not in fg_cols and c not in dom_ratio_cols and c not in log_handled and not c.startswith('DOM_')]
 
 env_cols, mat_cols = [], []
 for col in remaining_cols:
@@ -192,7 +109,7 @@ for col in remaining_cols:
 # ==========================================
 # 3. UI 界面布局
 # ==========================================
-st.set_page_config(page_title="Qm Predictor (v29 高阶势能标定版)", layout="wide")
+st.set_page_config(page_title="Qm Predictor (V31 化学先验版)", layout="wide")
 
 def apply_custom_theme(theme_name):
     if theme_name == '暗夜深邃 (Dark)':
@@ -201,14 +118,18 @@ def apply_custom_theme(theme_name):
         st.markdown("<style>.stApp { background-color: #FAEDDF; color: #4A3A2C; }</style>", unsafe_allow_html=True)
 
 st.title("目标污染物吸附性能预测系统")
-st.markdown("基于物理先验引导的混合专家模型，集成 **v29 径向基高阶热力学补偿 (RBF Calibration)** 的推断引擎。")
+st.markdown("基于领域先验引导的机器学习平台。内核集成 **DOM/重金属化学计量比 (Stoichiometric Ratio)** 显式映射，无需硬编码即可自动感知极端热力学突变。")
 
 with st.sidebar:
     st.subheader("系统控制")
     selected_theme = st.radio("界面风格：", ('默认极简 (Light)', '暗夜深邃 (Dark)', '柔和护眼 (Warm)'), index=0)
     apply_custom_theme(selected_theme)
     st.markdown("---")
-    st.markdown("### 引擎调度监控\n✅ 常规专家: True TabM (v6.2)\n✅ 补偿专家: 混合物理-数据标定流形\n系统将自动执行包含维里系数展开的高阶修正。")
+    st.subheader("🧠 推断引擎选择")
+    # 让用户可以随时切换五大模型对比
+    selected_model_name = st.selectbox("请选择底层机器学习算法:", list(models_dict.keys()), index=4)
+    st.markdown("---")
+    st.markdown("✅ 数据管道纯净化\n✅ 物理门控已下线\n✅ 化学先验特征交叉已激活")
 
 user_inputs = {}
 tab_env, tab_mat, tab_dom = st.tabs(["反应环境与操作条件", "材料理化与结构特性", "共存水体基质 (DOM)"])
@@ -232,12 +153,12 @@ with tab_env:
 with tab_mat:
     col1_m, col2_m = st.columns(2)
     with col1_m:
-        if 'Log_specific surface area m2/g' in X_cols_v28:
+        if 'Log_specific surface area m2/g' in X_cols:
             ssa_def = np.expm1(get_median('Log_specific surface area m2/g'))
             ssa_v = st.number_input("比表面积 (m2/g)", value=float(ssa_def if ssa_def > 0 else 150.0), format="%.4f", step=0.0001)
             user_inputs['Log_specific surface area m2/g'] = np.log1p(ssa_v)
     with col2_m:
-        if 'Log_molecular weight' in X_cols_v28:
+        if 'Log_molecular weight' in X_cols:
             mw_def = np.expm1(get_median('Log_molecular weight'))
             mw_v = st.number_input("分子量 (kDa)", value=float(mw_def if mw_def > 0 else 300.0), format="%.4f", step=0.0001)
             user_inputs['Log_molecular weight'] = np.log1p(mw_v)
@@ -255,68 +176,47 @@ with tab_mat:
                 user_inputs[fg] = float(st.checkbox(fg.replace('FG_', '')))
 
 with tab_dom:
-    if dom_cols:
-        for dom in dom_cols:
-            user_inputs[dom] = st.number_input(f"{dom.replace('DOM_', '').replace('_浓度', '')} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
+    dom_raw_inputs = {}
+    # 动态捕获模型需要的 DOM 种类 (支持 HA, FA, CA 等)
+    expected_doms = [c.replace('Log_', '').replace('_to_C0_Ratio', '') for c in dom_ratio_cols]
+    
+    if expected_doms:
+        for dom in expected_doms:
+            dom_raw_inputs[dom] = st.number_input(f"{dom} 浓度 (mg/L)", value=0.0, format="%.4f", step=0.0001)
 
 # ==========================================
-# 4. 双路硬路由与 【隐式径向基热力学补偿】
+# 4. 纯净化学推断执行
 # ==========================================
 st.markdown("---")
-if st.button("运行混合专家系统", use_container_width=True):
-    ha_val = user_inputs.get('DOM_HA', 0.0)
-    
+if st.button(f"运行 [{selected_model_name}]", use_container_width=True):
     try:
-        if c0_raw < 10.0 and ha_val > 0.0:
-            bridging_promo = np.exp(-((ha_val - 10.0)**2) / 5.0) if c0_raw < 10.0 else 0.0
-            comp_inhib = max(0.0, ha_val - 10.0) * (1.0 - np.tanh(c0_raw / 10.0))
-            
-            st.warning(f"⚠️ 物理门控已激活：检测到极低浓度且存在特定 HA 吸附势能扰动。")
-            
-            user_inputs['Physical_Gate_Inhibition'] = 1.0
-            user_inputs['HA_Bridging_Promotion'] = bridging_promo
-            user_inputs['HA_Competitive_Inhibition'] = comp_inhib
-            
-            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v28)
-            for col in X_cols_v28:
-                if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
-            
-            # 模型基础预测 (基于对数空间的平滑预测)
-            pred_log = model_penalty.predict(final_df)[0]
-            base_prediction = np.expm1(pred_log)
-            
-            # 🔥 v29 核心：高阶径向基(RBF)热力学势能补偿 (隐性精准标定)
-            # 通过逆向矩阵求解，这条连续平滑的物理曲线将在 5, 10, 15, 20 点精准产生 -5, -8, +3, +2 的偏置
-            rbf_thermo_correction = (
-                -4.651 * math.exp(-((ha_val - 5.0)**2) / 8.0)
-                - 7.942 * math.exp(-((ha_val - 10.0)**2) / 8.0)
-                + 3.267 * math.exp(-((ha_val - 15.0)**2) / 8.0)
-                + 1.856 * math.exp(-((ha_val - 20.0)**2) / 8.0)
-            )
-            
-            # 引入物理浓度衰减阻尼
-            damping_factor = math.exp(-c0_raw / 10.0)
-            final_correction = rbf_thermo_correction * damping_factor
-            
-            # 施加标定，并进行物理极值保护
-            main_prediction = max(0.1, base_prediction + final_correction)
-            
-            st.info(f"🧠 系统演算：为矫正对数空间的极值失真，系统已附加 RBF 经验势能补偿 ({final_correction:+.4f} mg/g)。底层已切换至【v29 高阶热力学标定专家】。")
-            engine_used = "v29 RBF-Calibrated TabM (径向基高阶补偿模式)"
-            
-        else:
-            st.success(f"✅ 物理状态稳定：检测为常规浓度或纯水基质。底层切换至【v6.2 全局热力学专家】以保证流形的平滑预测。")
-            
-            final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols_v62)
-            for col in X_cols_v62:
-                if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
-                
-            pred_log = model_normal.predict(final_df)[0]
-            main_prediction = np.expm1(pred_log)
-            engine_used = "v6.2 全局流形专家"
-            
-        st.metric(label=f"预测理论平衡吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
-        st.caption(f"当前执行内核: {engine_used}")
+        # 🔥 V31 核心逻辑：在前端仅作无量纲化学交叉，绝不干涉模型权重
+        for dom, dom_conc in dom_raw_inputs.items():
+            # 恢复训练时的数据流对齐
+            user_inputs[f'DOM_{dom}'] = dom_conc
+            user_inputs[f'Log_{dom}_to_C0_Ratio'] = np.log1p(dom_conc / (c0_raw + 1e-6))
+
+        # 整理张量
+        final_df = pd.DataFrame([user_inputs]).reindex(columns=X_cols)
+        for col in X_cols:
+            if pd.isna(final_df[col][0]): final_df[col] = get_median(col)
         
+        # 提取选定的模型
+        active_model = models_dict[selected_model_name]
+        
+        # 纯净推断
+        pred_log = active_model.predict(final_df)[0]
+        main_prediction = np.expm1(pred_log)
+        
+        st.success("✅ 推断完成！")
+        st.metric(label=f"预测理论平衡吸附量 Qm (mg/g)", value=f"{main_prediction:.4f}")
+        
+        # 调试/展示信息
+        with st.expander("🔍 查看化学先验特征解析状态"):
+            for dom in expected_doms:
+                ratio_val = user_inputs[f'Log_{dom}_to_C0_Ratio']
+                st.write(f"**{dom}/C0 对数计量比 (Log_Ratio):** `{ratio_val:.4f}`")
+            st.caption("注：模型完全依赖上述化学先验比例自主判定系统处于架桥主导（低比值突变）还是位阻主导（高比值坍缩）状态，已剥离所有人工硬编码干预。")
+            
     except Exception as e:
         st.error(f"引擎调度失败: {e}")
