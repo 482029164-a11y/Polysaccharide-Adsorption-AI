@@ -7,7 +7,7 @@ import torch.nn as nn
 import sys
 import os
 import math
-import optuna  # 🌟 核心修复：必须导入 optuna，否则 joblib 无法解析 pkl 中的寻优对象
+import optuna
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
@@ -71,15 +71,26 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 内核加载与【强力归一化】特征分拣
+# 1. 内核加载与【安全沙箱】特征分拣
 # ==========================================
 @st.cache_resource
 def load_and_standardize():
-    orig_load = torch.load
-    torch.load = lambda *args, **kwargs: orig_load(*args, **kwargs, map_location='cpu')
-    f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
-    data = joblib.load(f_path)
-    torch.load = orig_load
+    # 🌟 终极修复：全局安全沙箱，绝对防止 lambda 递归套娃
+    if not hasattr(torch, '_orig_load_backup'):
+        torch._orig_load_backup = torch.load
+
+    def safe_cpu_load(*args, **kwargs):
+        kwargs['map_location'] = 'cpu'
+        return torch._orig_load_backup(*args, **kwargs)
+
+    torch.load = safe_cpu_load
+    
+    try:
+        f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
+        data = joblib.load(f_path)
+    finally:
+        # 无论成功还是失败，必定还原原始加载器，防止污染后续热重载
+        torch.load = torch._orig_load_backup
     
     X_base = data['X']
     models = data['models']
@@ -115,13 +126,17 @@ def load_and_standardize():
             
     return X_base, models, sorted(ui_phys), sorted(ui_func), display_to_actuals
 
-X_base, models, ui_phys, ui_func, mapping = load_and_standardize()
+try:
+    X_base, models, ui_phys, ui_func, mapping = load_and_standardize()
+except Exception as e:
+    st.error(f"严重错误：内核读取失败，请检查文件是否存在。详细报错：{e}")
+    st.stop()
 
 # ==========================================
 # 2. 界面设计 (单点录入)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
-st.title("🧪 多糖吸附预测专家系统 (修正版)")
+st.title("🧪 多糖吸附预测专家系统 (防闪退版)")
 
 st.subheader("1. 策略配置")
 selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
