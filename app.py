@@ -117,7 +117,6 @@ selected_name = st.selectbox("选择模型中枢:", list(models.keys()))
 st.divider()
 
 # --- 物理量输入区 ---
-st.subheader("")
 st.info("💡 请输入实验原始物理量，默认填充为中位数。")
 user_inputs = {}
 cols_phys = st.columns(2)
