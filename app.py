@@ -4,14 +4,13 @@ import numpy as np
 import joblib
 import torch
 import torch.nn as nn
-import shap
 import matplotlib.pyplot as plt
 import sys
 import math
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 0. 必须存在的类定义 (必须包含 fit 方法以通过 sklearn 检查)
+# 0. 底层蓝图 (确保类定义完整以通过 sklearn 校验)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -33,42 +32,37 @@ class TrueTabMMini(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2), nn.LayerNorm(hidden_dim // 2), nn.ReLU(),
             nn.Dropout(max(0, dropout - 0.1))
         )
-        self.head_weights = nn.Parameter(torch.randn(k_ensembles, hidden_dim // 2) / math.sqrt(hidden_dim // 2))
+        self.head_weights = nn.Parameter(torch.randn(k_ensembles, hidden_dim // 2) / 11.31)
         self.head_biases = nn.Parameter(torch.zeros(k_ensembles))
     def forward(self, x):
         x = x.unsqueeze(1) * self.R
         out = self.shared_bottom(x)
         return (out * self.head_weights).sum(dim=-1) + self.head_biases
 
-# --- 核心修正：补全评估器协议 ---
 class PyTorchBaseWrapper(BaseEstimator, RegressorMixin):
     def __init__(self, epochs=100, lr=0.001, batch_size=32):
         self.epochs = epochs; self.lr = lr; self.batch_size = batch_size
-    def fit(self, X, y=None): return self # 必须存在此方法
+    def fit(self, X, y=None): return self
 
 class PyTorchSingleDNN(PyTorchBaseWrapper):
     def predict(self, X):
-        device = torch.device('cpu')
-        if hasattr(self, 'model_'): self.model_.to(device).eval()
+        if hasattr(self, 'model_'): self.model_.to('cpu').eval()
         X_t = torch.tensor(X.values if hasattr(X, 'values') else X, dtype=torch.float32)
         with torch.no_grad(): return self.model_(X_t).cpu().numpy().flatten()
 
 class PyTorchDeepEnsemble(PyTorchBaseWrapper):
     def predict(self, X):
-        device = torch.device('cpu')
         X_t = torch.tensor(X.values if hasattr(X, 'values') else X, dtype=torch.float32)
-        for m in self.models_: m.to(device).eval()
+        for m in self.models_: m.to('cpu').eval()
         with torch.no_grad():
             return torch.cat([m(X_t) for m in self.models_], dim=1).mean(dim=1).cpu().numpy().flatten()
 
 class PyTorchTrueTabMRegressor(PyTorchBaseWrapper):
     def predict(self, X):
-        device = torch.device('cpu')
-        if hasattr(self, 'model_'): self.model_.to(device).eval()
+        if hasattr(self, 'model_'): self.model_.to('cpu').eval()
         X_t = torch.tensor(X.values if hasattr(X, 'values') else X, dtype=torch.float32)
         with torch.no_grad(): return self.model_(X_t).mean(dim=1).cpu().numpy().flatten()
 
-# 类映射注册
 sys.modules['__main__'].StandardDNN = StandardDNN
 sys.modules['__main__'].TrueTabMMini = TrueTabMMini
 sys.modules['__main__'].PyTorchSingleDNN = PyTorchSingleDNN
@@ -76,61 +70,90 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 应用与模型加载
+# 1. 内核加载与对数逻辑映射
 # ==========================================
-st.set_page_config(page_title="Adsorption AI Predictor", layout="centered")
-st.title("🧪 多糖吸附预测专家系统")
-
 @st.cache_resource
-def load_data():
+def load_and_prep():
     orig_load = torch.load
     torch.load = lambda *args, **kwargs: orig_load(*args, **kwargs, map_location='cpu')
-    # 请确保你的文件名是 model_artifacts_final.pkl 或 model_artifacts_v32.pkl
-    data = joblib.load('model_artifacts_final.pkl')
+    # 自动探测文件
+    file_name = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
+    data = joblib.load(file_name)
     torch.load = orig_load
-    return data
+    
+    X_base = data['X']
+    models = data['models']
+    
+    # 找出哪些列是带 Log_ 的
+    log_cols = [c for c in X_base.columns if c.startswith('Log_')]
+    raw_to_log = {c.replace('Log_', ''): c for c in log_cols}
+    
+    return X_base, models, raw_to_log
 
 try:
-    kernel = load_data()
-    X_base, models = kernel['X'], kernel['models']
+    X_base, models, log_mapping = load_and_prep()
 except Exception as e:
     st.error(f"加载内核失败: {e}"); st.stop()
 
 # ==========================================
-# 2. 界面排版 (直接数值输入)
+# 2. 界面显示 (数值输入 + 中位数填充)
 # ==========================================
+st.set_page_config(page_title="Adsorption AI", layout="centered")
+st.title("🧪 多糖吸附预测专家系统")
+
 st.subheader("1. 策略配置")
 selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
 
 st.divider()
-st.subheader("2. 特征参数手动录入")
-st.info("💡 请在下方框内直接输入数值，默认值为数据集平均水平。")
+st.subheader("2. 特征参数录入")
+st.info("💡 默认填充值为数据集**中位数 (Median)**。系统将在幕后自动处理对数转换。")
 
-user_input_dict = {}
+user_raw_inputs = {}
 cols = st.columns(2)
-for i, col in enumerate(X_base.columns):
+
+# 在界面上只显示非 Log 的原始名称
+display_cols = []
+for c in X_base.columns:
+    display_name = c.replace('Log_', '')
+    if display_name not in display_cols:
+        display_cols.append(display_name)
+
+for i, name in enumerate(display_cols):
     with cols[i % 2]:
-        # 获取数据集的统计边界供参考
-        val_min = float(X_base[col].min())
-        val_max = float(X_base[col].max())
-        val_avg = float(X_base[col].mean())
+        # 寻找对应的原始数据计算中位数
+        actual_col = f"Log_{name}" if f"Log_{name}" in X_base.columns else name
         
-        # 🌟 改为直接数值输入框 (number_input)
-        user_input_dict[col] = st.number_input(
-            f"{col}", 
-            value=val_avg, 
-            format="%.4f",
-            help=f"参考范围: {val_min:.2f} ~ {val_max:.2f}"
+        # 算对数还原后的中位数作为默认填充
+        if actual_col.startswith("Log_"):
+            median_val = np.expm1(X_base[actual_col].median())
+        else:
+            median_val = X_base[actual_col].median()
+            
+        user_raw_inputs[name] = st.number_input(
+            f"{name}", 
+            value=float(median_val), 
+            format="%.4f"
         )
 
 # ==========================================
-# 3. 结果输出
+# 3. 幕后黑盒转换与预测
 # ==========================================
 st.divider()
-input_df = pd.DataFrame([user_input_dict])
+# 构造模型真正需要的 DataFrame
+processed_input = {}
+for col in X_base.columns:
+    raw_name = col.replace('Log_', '')
+    raw_value = user_raw_inputs[raw_name]
+    
+    if col.startswith('Log_'):
+        # 🌟 幕后转换逻辑: Log1p 处理
+        processed_input[col] = np.log1p(raw_value)
+    else:
+        processed_input[col] = raw_value
+
+input_df = pd.DataFrame([processed_input])
 active_model = models[selected_name]
 
-# 核心预测
 try:
     log_y = active_model.predict(input_df)[0]
     real_y = np.expm1(log_y)
@@ -139,27 +162,8 @@ try:
     <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; text-align:center;">
         <h2 style="margin:0; color:#1f77b4;">预测吸附量 Qm</h2>
         <h1 style="font-size:60px; margin:10px 0;">{real_y:.2f} <small style="font-size:20px;">mg/g</small></h1>
+        <p style="color:#666;">后台计算完成 (Inverse Log-transformed)</p>
     </div>
     """, unsafe_allow_html=True)
 except Exception as e:
-    st.error(f"预测计算出错: {e}")
-
-# ==========================================
-# 4. 可解释性 (SHAP)
-# ==========================================
-if st.checkbox("🔍 开启 SHAP 局部归因分析"):
-    with st.spinner("计算中..."):
-        try:
-            if 'XGBoost' in selected_name or 'Random Forest' in selected_name:
-                explainer = shap.TreeExplainer(active_model)
-                shap_vals = explainer(input_df)
-            else:
-                def f(x): return active_model.predict(pd.DataFrame(x, columns=X_base.columns))
-                explainer = shap.KernelExplainer(f, shap.kmeans(X_base, 5))
-                shap_vals = explainer(input_df)
-            
-            fig, ax = plt.subplots()
-            shap.plots.waterfall(shap_vals[0], show=False)
-            st.pyplot(fig)
-        except Exception as e:
-            st.warning(f"当前模型暂不支持归因可视化: {e}")
+    st.error(f"预测出错: {e}")
