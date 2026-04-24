@@ -4,14 +4,13 @@ import numpy as np
 import joblib
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 import sys
 import os
 import math
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 0. 底层蓝图 (确保与内核 V32 严格对齐)
+# 0. 必须存在的底层蓝图 (严密对齐内核)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -31,7 +30,6 @@ class TrueTabMMini(nn.Module):
         self.shared_bottom = nn.Sequential(
             nn.Linear(input_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2), nn.LayerNorm(hidden_dim // 2), nn.ReLU(),
-            # 修正：根据您之前的代码逻辑，这里通常是 LayerNorm
             nn.Dropout(max(0, dropout - 0.1))
         )
         self.head_weights = nn.Parameter(torch.randn(k_ensembles, hidden_dim // 2) / 11.31)
@@ -72,10 +70,10 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 智能特征分类与内核载入
+# 1. 内核加载与全量特征分拣
 # ==========================================
 @st.cache_resource
-def load_and_classify():
+def load_and_audit_features():
     orig_load = torch.load
     torch.load = lambda *args, **kwargs: orig_load(*args, **kwargs, map_location='cpu')
     f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
@@ -83,113 +81,127 @@ def load_and_classify():
     torch.load = orig_load
     
     X_base = data['X']
-    models = data['models']
+    all_models = data['models']
     
-    # 🌟 特征自动化分拣逻辑
-    continuous_physics = []  # 基础物理量（SSA, Pore size等）
-    functional_groups = []   # 官能团（0/1 特征）
-    derived_cols = []        # 幕后派生项（Log, Ratio）
-
-    for col in X_base.columns:
-        if 'Ratio' in col or col.startswith('Log_'):
-            derived_cols.append(col)
+    # 🔍 全量特征审计
+    all_cols = X_base.columns.tolist()
+    
+    # 提取“根特征”（即用户需要填写的原始项）
+    root_features = set()
+    for col in all_cols:
+        # 去掉派生修饰词
+        temp = col.replace('Log_', '').replace('_Ratio', '').replace('Ratio', '').strip()
+        # 特殊处理比值：如果包含 HA 和 C0，根特征应是 HA 和 C0 本身
+        if 'HA_to_C0' in temp:
+            root_features.add('DOM_HA')
+            root_features.add('initial concentration mg/L')
         else:
-            # 判断是否为官能团：检查数据是否只包含 0 和 1
-            unique_vals = X_base[col].dropna().unique()
+            root_features.add(temp)
+
+    # 细分根特征
+    final_phys_ui = [] # 连续数值
+    final_func_ui = [] # 勾选框
+    
+    for rf in sorted(list(root_features)):
+        # 匹配原始数据中对应的真实列（用来算中位数）
+        match_col = rf
+        if rf not in all_cols:
+            # 如果原名不在，找对应的 Log_ 名
+            match_col = f"Log_{rf}" if f"Log_{rf}" in all_cols else None
+        
+        if match_col:
+            unique_vals = X_base[match_col].dropna().unique()
             if set(unique_vals).issubset({0, 1}):
-                functional_groups.append(col)
+                final_func_ui.append(rf)
             else:
-                continuous_physics.append(col)
-                
-    return X_base, models, continuous_physics, functional_groups, derived_cols
+                final_phys_ui.append(rf)
+        else:
+            # 如果依然匹配不到（如 Ratio 的拆分项），默认归为数值输入
+            final_phys_ui.append(rf)
 
-X_base, models, phys_cols, func_cols, derived_cols = load_and_classify()
+    return X_base, all_models, final_phys_ui, final_func_ui
+
+X_base, models, phys_ui, func_ui = load_and_audit_features()
 
 # ==========================================
-# 2. 界面设计 (数值输入 + 官能团打勾)
+# 2. 界面呈现
 # ==========================================
-st.set_page_config(page_title="Adsorption Expert AI", layout="centered")
-st.title(" 多糖吸附预测")
+st.set_page_config(page_title="Adsorption Expert", layout="centered")
+st.title("🧪 多糖吸附预测专家系统 (全量特征版)")
 
-st.subheader("1. 推断引擎配置")
-selected_name = st.selectbox("选择模型中枢:", list(models.keys()))
+selected_model = st.selectbox("1. 选择模型引擎:", list(models.keys()))
 
 st.divider()
 
-# --- 物理量输入区 ---
-st.info("💡 请输入实验原始物理量，默认填充为中位数。")
-user_inputs = {}
-cols_phys = st.columns(2)
-for i, name in enumerate(phys_cols):
-    with cols_phys[i % 2]:
-        user_inputs[name] = st.number_input(f"{name}", value=float(X_base[name].median()), format="%.4f")
+# --- 数值输入区 ---
+st.subheader("2. 物理与环境参数录入")
+st.info("💡 默认值为中位数。Log 转换与 Ratio 合成已在后台自动激活。")
+user_vals = {}
+c1, c2 = st.columns(2)
+for i, name in enumerate(phys_ui):
+    with (c1 if i % 2 == 0 else c2):
+        # 尝试寻找参考中位数
+        ref_col = f"Log_{name}" if f"Log_{name}" in X_base.columns else name
+        if ref_col in X_base.columns:
+            m_val = np.expm1(X_base[ref_col].median()) if ref_col.startswith('Log_') else X_base[ref_col].median()
+        else:
+            m_val = 0.0
+            
+        user_vals[name] = st.number_input(f"{name}", value=float(m_val), format="%.4f")
 
 st.divider()
 
-# --- 官能团勾选区 ---
-st.subheader("3. 表面官能团/组分检测")
-st.caption("勾选代表【存在/已修饰】，不勾选默认【不存在/未检出】。")
-cols_func = st.columns(3) # 官能团分三列显示，更节省空间
-for i, name in enumerate(func_cols):
-    with cols_func[i % 3]:
-        # 🌟 核心改进：使用 checkbox 替代 number_input
-        checked = st.checkbox(f"{name}", value=False)
-        user_inputs[name] = 1.0 if checked else 0.0
+# --- 勾选框区 ---
+st.subheader("3. 表面官能团检测")
+st.caption("勾选代表存在，不勾选代表不存在。")
+cf1, cf2, cf3 = st.columns(3)
+for i, name in enumerate(func_ui):
+    with (cf1 if i % 3 == 0 else cf2 if i % 3 == 1 else cf3):
+        is_checked = st.checkbox(f"{name}", value=False)
+        user_vals[name] = 1.0 if is_checked else 0.0
 
 # ==========================================
-# 3. 幕后黑盒：智能数据合成
+# 3. 幕后全量特征合成 (核心逻辑)
 # ==========================================
 st.divider()
 
-# 最终送入模型的特征行
 final_row = {}
 
-# 1. 填充 UI 上的所有输入（物理量 + 官能团转化后的 0/1）
-for k, v in user_inputs.items():
-    final_row[k] = v
-
-# 2. 自动合成隐藏的 Ratio 和 Log 项
-for d_col in derived_cols:
-    if d_col.startswith('Log_'):
-        base_name = d_col.replace('Log_', '')
+# 遍历模型需要的【每一个】特征，确保全部填充
+for col in X_base.columns:
+    # 逻辑 1：处理 Ratio (以 HA_to_C0 为例)
+    if 'Ratio' in col:
+        # 这里需要根据你实际的比值逻辑编写
+        ha = user_vals.get('DOM_HA', 0)
+        c0 = user_vals.get('initial concentration mg/L', 1e-9)
+        ratio_val = ha / c0
+        final_row[col] = np.log1p(ratio_val) if col.startswith('Log_') else ratio_val
+    
+    # 逻辑 2：处理普通的 Log 项
+    elif col.startswith('Log_'):
+        raw_name = col.replace('Log_', '')
+        final_row[col] = np.log1p(user_vals.get(raw_name, 0))
         
-        # 处理可能的 Log_Ratio 情况
-        if 'Ratio' in base_name:
-            if 'HA_to_C0_Ratio' in base_name:
-                ha = user_inputs.get('DOM_HA', 0)
-                c0 = user_inputs.get('initial concentration mg/L', 1e-9)
-                final_row[d_col] = np.log1p(ha / c0)
-        else:
-            val = user_inputs.get(base_name, 0)
-            final_row[d_col] = np.log1p(val)
-            
-    elif 'Ratio' in d_col:
-        # 处理普通的 Ratio 情况
-        if 'HA_to_C0_Ratio' in d_col:
-            ha = user_inputs.get('DOM_HA', 0)
-            c0 = user_inputs.get('initial concentration mg/L', 1e-9)
-            final_row[d_col] = ha / c0
+    # 逻辑 3：处理原始项
+    else:
+        final_row[col] = user_vals.get(col, 0)
 
-# 补全可能缺失的列并对齐顺序
-final_df = pd.DataFrame([final_row])
-for m_col in X_base.columns:
-    if m_col not in final_df.columns:
-        final_df[m_col] = X_base[m_col].median()
-final_df = final_df[X_base.columns]
+# 转换为 DataFrame 并对齐顺序
+final_df = pd.DataFrame([final_row])[X_base.columns]
 
 # ==========================================
-# 4. 预测与结果呈现
+# 4. 预测输出
 # ==========================================
 try:
-    log_y = models[selected_name].predict(final_df)[0]
+    log_y = models[selected_model].predict(final_df)[0]
     real_y = np.expm1(log_y)
     
     st.markdown(f"""
-    <div style="background-color:#F8F9FA; padding:25px; border-radius:15px; text-align:center; border: 2px solid #007BFF;">
-        <h3 style="margin:0; color:#555;">预测平衡吸附量 Qm</h3>
+    <div style="background-color:#F0F7FF; padding:30px; border-radius:15px; text-align:center; border:2px solid #007BFF;">
+        <h3 style="margin:0; color:#444;">预测平衡吸附量 Qm</h3>
         <h1 style="font-size:60px; color:#007BFF; margin:10px 0;">{real_y:.2f} <small style="font-size:20px; color:#666;">mg/g</small></h1>
-        <p style="color:#999; font-size:13px;">（后台已自动完成对数变换与比值联动计算）</p>
+        <p style="color:#888; font-size:14px;">（所有派生特征已完成实时同步）</p>
     </div>
     """, unsafe_allow_html=True)
 except Exception as e:
-    st.error(f"预测过程出现异常: {e}")
+    st.error(f"预测引擎故障: {e}")
