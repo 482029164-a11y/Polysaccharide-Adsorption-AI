@@ -109,7 +109,7 @@ X_base, models, phys_cols, func_cols, derived_cols = load_and_classify()
 # 2. 界面设计 (数值输入 + 官能团打勾)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert AI", layout="centered")
-st.title("🧪 多糖吸附预测专家系统 (UX 优化版)")
+st.title(" 多糖吸附预测")
 
 st.subheader("1. 推断引擎配置")
 selected_name = st.selectbox("选择模型中枢:", list(models.keys()))
@@ -117,7 +117,7 @@ selected_name = st.selectbox("选择模型中枢:", list(models.keys()))
 st.divider()
 
 # --- 物理量输入区 ---
-st.subheader("2. 基础物理工况录入")
+st.subheader("")
 st.info("💡 请输入实验原始物理量，默认填充为中位数。")
 user_inputs = {}
 cols_phys = st.columns(2)
