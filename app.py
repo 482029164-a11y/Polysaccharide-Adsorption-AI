@@ -80,7 +80,7 @@ __main__.PyTorchDeepEnsemble = PyTorchDeepEnsemble
 @st.cache_resource
 def load_v32_system():
     try:
-        pack = joblib.load('model_artifacts_v32.pkl')
+        pack = joblib.load('model_artifacts_final.pkl')
         X_cols = pack['X'].columns.tolist()
         X_medians = pack['X'].median(numeric_only=True).to_dict()
         return X_cols, X_medians, pack['models']
