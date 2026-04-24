@@ -8,10 +8,12 @@ import sys
 import os
 import math
 import optuna
+import xgboost  # 🌟 必须显式导入，否则反序列化 XGBoost 模型时会静默崩溃
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.ensemble import RandomForestRegressor
 
 # ==========================================
-# 0. 底层蓝图 (严密对齐内核)
+# 0. 底层蓝图 (严密对齐训练内核)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -70,26 +72,26 @@ sys.modules['__main__'].PyTorchSingleDNN = PyTorchSingleDNN
 sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
+# ==========================================
+# 1. 终极参数劫持与内核加载
+# ==========================================
 @st.cache_resource
 def load_and_standardize():
-    # 🌟 终极护盾：智能识别并覆盖 map_location
+    # 🌟 终极防碰撞：接管所有形式的 map_location 传参
     if not hasattr(torch, '_orig_load_backup'):
         torch._orig_load_backup = torch.load
 
     def safe_cpu_load(*args, **kwargs):
-        # 将 args 转换为 list 以便修改
-        args_list = list(args)
-        
-        # 判断 map_location 是否作为位置参数传入 (即 args 的第二个元素)
-        if len(args_list) >= 2:
-            args_list[1] = 'cpu'              # 强行覆盖位置参数
-            kwargs.pop('map_location', None)  # 拔除 kwargs 中的残留，防止重复
+        kwargs.pop('map_location', None)
+        # torch.load(f, map_location=None, ...) 
+        # 如果 args 长度 >= 2，说明 map_location 是通过位置参数传入的
+        if len(args) >= 2:
+            args_list = list(args)
+            args_list[1] = 'cpu'
+            args = tuple(args_list)
         else:
-            # 如果没有作为位置参数传入，则作为关键字参数强行注入
             kwargs['map_location'] = 'cpu'
-            
-        # 传入修改后的参数
-        return torch._orig_load_backup(*args_list, **kwargs)
+        return torch._orig_load_backup(*args, **kwargs)
 
     torch.load = safe_cpu_load
     
@@ -97,39 +99,11 @@ def load_and_standardize():
         f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
         data = joblib.load(f_path)
     finally:
-        # 无论如何，还原底层函数
         torch.load = torch._orig_load_backup
     
     X_base = data['X']
     models = data['models']
     
-    # ... [保留你原有的后续归一化分拣逻辑，无需修改] ...
-    
-    display_to_actuals = {}
-    for col in X_base.columns:
-        if 'Ratio' in col or 'Log' in col:
-            continue
-        std_name = col.lower().strip()
-        if std_name not in display_to_actuals:
-            display_to_actuals[std_name] = []
-        display_to_actuals[std_name].append(col)
-        
-    ui_phys, ui_func = [], []
-    for std_name, actuals in display_to_actuals.items():
-        ref_col = actuals[0]
-        unique_vals = X_base[ref_col].dropna().unique()
-        if set(unique_vals).issubset({0, 1}):
-            ui_func.append(std_name)
-        else:
-            ui_phys.append(std_name)
-            
-    for p in ['dom_ha', 'initial concentration mg/l']:
-        if p not in ui_phys and p not in ui_func:
-            ui_phys.append(p)
-            
-    return X_base, models, sorted(ui_phys), sorted(ui_func), display_to_actuals
-    
-    # 归一化分拣
     display_to_actuals = {}
     for col in X_base.columns:
         if 'Ratio' in col or 'Log' in col:
@@ -161,7 +135,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 界面设计 (单点录入)
+# 2. 界面设计 (极简脱水版)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
 st.title("🧪 多糖吸附预测专家系统")
@@ -171,7 +145,7 @@ selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
 
 st.divider()
 st.subheader("2. 基础物理工况录入")
-st.info("💡 已合并冗余特征并隐藏派生项。")
+st.info("💡 已合并所有冗余特征并隐藏派生项。")
 
 user_standard_inputs = {}
 cols_p = st.columns(2)
@@ -229,7 +203,7 @@ try:
     <div style="background-color:#F0F7FF; padding:30px; border-radius:15px; text-align:center; border:2px solid #007BFF;">
         <h3 style="margin:0; color:#444;">预测平衡吸附量 Qm</h3>
         <h1 style="font-size:60px; color:#007BFF; margin:10px 0;">{res_real:.2f} <small style="font-size:20px; color:#666;">mg/g</small></h1>
-        <p style="color:#888; font-size:14px;">（后台已自动同步合成所有特征）</p>
+        <p style="color:#888; font-size:14px;">（后台已自动同步合成所有依赖特征）</p>
     </div>
     """, unsafe_allow_html=True)
 except Exception as e:
