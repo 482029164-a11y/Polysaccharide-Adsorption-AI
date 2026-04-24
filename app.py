@@ -6,10 +6,11 @@ import torch
 import torch.nn as nn
 import shap
 import matplotlib.pyplot as plt
+import sys
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 0. 必须存在的底层蓝图定义 (供内核读取)
+# 0. 必须存在的底层蓝图定义 (严密对齐内核)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -60,7 +61,7 @@ class PyTorchDeepEnsemble(BaseEstimator, RegressorMixin):
         with torch.no_grad():
             return torch.cat([m(X_t) for m in self.models_], dim=1).mean(dim=1).cpu().numpy().flatten()
 
-import sys
+# 强制注册类到 __main__ 防止 joblib 加载失败
 sys.modules['__main__'].StandardDNN = StandardDNN
 sys.modules['__main__'].TrueTabMMini = TrueTabMMini
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
@@ -68,99 +69,77 @@ sys.modules['__main__'].PyTorchSingleDNN = PyTorchSingleDNN
 sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 
 # ==========================================
-# 1. 核心应用与侧边栏配置
+# 1. 应用配置 (界面还原至主屏)
 # ==========================================
-st.set_page_config(page_title="AI-Driven Adsorption Predictor", layout="wide", page_icon="🧪")
-st.title("🧪 复杂配体竞争体系下 $Q_m$ 预测专家系统")
-st.markdown("基于 **深度特征寻优** 与 **自适应核密度逆向赋权 (IDW)** 构建。请在侧边栏调节材料和化学环境特征参数。")
+st.set_page_config(page_title="Qm Predictor", layout="centered", page_icon="🧪")
+st.title("🧪 多糖吸附预测专家系统 (修正版)")
 
 @st.cache_resource
 def load_kernel():
-    # 🌟 核心补丁：Web端同样需要将显卡张量洗白为 CPU 张量
+    # 物理洗白显卡张量
     original_torch_load = torch.load
     torch.load = lambda *args, **kwargs: original_torch_load(*args, **kwargs, map_location='cpu')
-    
     data = joblib.load('model_artifacts_final.pkl')
-    
     torch.load = original_torch_load
     
+    # 获取寻优历史中的最佳模型名
     best_r2 = -float('inf')
-    best_name_key = None
-    for study_name, std in data['studies'].items():
-        if std.best_value > best_r2:
-            best_r2 = std.best_value
-            best_name_key = study_name
-    best_model_name = 'DNN Ensemble' if best_name_key == 'Deep_Ensemble' else best_name_key.replace('_', ' ')
-    
-    return data['X'], data['models'], best_model_name, best_r2
+    best_key = "XGBoost"
+    for k, v in data['studies'].items():
+        if v.best_value > best_r2:
+            best_r2 = v.best_value
+            best_key = k
+    best_model_name = 'DNN Ensemble' if best_key == 'Deep_Ensemble' else best_key.replace('_', ' ')
+    return data['X'], data['models'], best_model_name
 
-try:
-    X_baseline, all_models, default_best_name, best_r2 = load_kernel()
-except FileNotFoundError:
-    st.error("🚨 无法找到内核文件！请确保 `model_artifacts_final.pkl` 存在于同一目录下。")
-    st.stop()
+X_baseline, all_models, default_best = load_kernel()
 
 # ==========================================
-# 2. 交互式控制面板
+# 2. 主界面输入区域 (还原排版)
 # ==========================================
-st.sidebar.header("🛠️ 智能模型与特征引擎设置")
-
-selected_model_name = st.sidebar.selectbox(
-    "1. 切换推断中枢 (Predictive Engine):", 
-    list(all_models.keys()), 
-    index=list(all_models.keys()).index(default_best_name)
-)
-
-st.sidebar.markdown(f"*当前模型全集交叉验证 OOF R²: **{best_r2:.4f}***")
-st.sidebar.divider()
-st.sidebar.subheader("2. 实时特征输入 (Real-time Features)")
-
-input_data = {}
-for col in X_baseline.columns:
-    col_min = float(X_baseline[col].min())
-    col_max = float(X_baseline[col].max())
-    col_mean = float(X_baseline[col].mean())
-    input_data[col] = st.sidebar.slider(
-        col, 
-        min_value=col_min, max_value=col_max, value=col_mean, 
-        step=(col_max - col_min) / 100.0 if col_max > col_min else 1.0
-    )
-
-# ==========================================
-# 3. 预测与可解释性解码
-# ==========================================
-user_df = pd.DataFrame([input_data])
-active_model = all_models[selected_model_name]
-
-log_pred = active_model.predict(user_df)[0]
-real_qm = np.expm1(log_pred)
+st.subheader("1. 模型选择")
+selected_model = st.selectbox("选择推断引擎:", list(all_models.keys()), index=list(all_models.keys()).index(default_best))
 
 st.divider()
-col1, col2 = st.columns([1, 2])
+st.subheader("2. 特征参数调节")
 
-with col1:
-    st.subheader("🎯 实时热力学响应结果")
-    st.metric(label="Predicted Adsorption Capacity ($Q_m$)", value=f"{real_qm:.2f} mg/g", delta="Log_y: {:.3f}".format(log_pred))
-    st.info(f"**模型状态**: 该推测受 {selected_model_name} 引擎及自适应惩罚区间约束。")
+# 在主界面平铺输入滑块
+input_values = {}
+cols = st.columns(2) # 分两列排版更整齐
+for i, col_name in enumerate(X_baseline.columns):
+    with cols[i % 2]:
+        val_min = float(X_baseline[col_name].min())
+        val_max = float(X_baseline[col_name].max())
+        val_mean = float(X_baseline[col_name].mean())
+        input_values[col_name] = st.slider(f"{col_name}", val_min, val_max, val_mean)
 
-with col2:
-    st.subheader("🔬 决策归因瀑布图 (Local SHAP Explanation)")
-    with st.spinner("正在解码该工况下的模型决策路径..."):
+# ==========================================
+# 3. 预测输出
+# ==========================================
+st.divider()
+user_input = pd.DataFrame([input_values])
+pred_log = all_models[selected_model].predict(user_input)[0]
+pred_real = np.expm1(pred_log)
+
+st.success(f"### 预测吸附量 $Q_m$: **{pred_real:.2f}** mg/g")
+
+# ==========================================
+# 4. SHAP 局部解释 (放在底部)
+# ==========================================
+if st.checkbox("查看模型决策归因 (SHAP)"):
+    with st.spinner("正在计算贡献度..."):
         try:
-            if 'XGBoost' in selected_model_name or 'Random Forest' in selected_model_name:
-                explainer = shap.TreeExplainer(active_model)
-                shap_values = explainer(user_df)
+            model_obj = all_models[selected_model]
+            if 'XGBoost' in selected_model or 'Random Forest' in selected_model:
+                explainer = shap.TreeExplainer(model_obj)
+                shap_vals = explainer(user_input)
             else:
-                def safe_predict(x_in):
-                    if not isinstance(x_in, pd.DataFrame): x_in = pd.DataFrame(x_in, columns=user_df.columns)
-                    return active_model.predict(x_in)
-                background = shap.kmeans(X_baseline, 5)
-                explainer = shap.KernelExplainer(safe_predict, background)
-                shap_values = explainer(user_df)
-
-            fig, ax = plt.subplots(figsize=(6, 4))
-            shap.plots.waterfall(shap_values[0], show=False)
+                def p(x): return model_obj.predict(pd.DataFrame(x, columns=X_baseline.columns))
+                explainer = shap.KernelExplainer(p, shap.kmeans(X_baseline, 5))
+                shap_vals = explainer(user_input)
+            
+            fig, ax = plt.subplots()
+            shap.plots.waterfall(shap_vals[0], show=False)
             st.pyplot(fig)
-            plt.close()
         except Exception as e:
-            st.warning(f"目前选中的深度架构暂不支持实时瀑布流解析。错误: {e}")
+            st.error(f"解释图生成失败: {e}")
