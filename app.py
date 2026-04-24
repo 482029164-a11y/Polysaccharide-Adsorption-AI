@@ -60,7 +60,6 @@ class PyTorchDeepEnsemble(BaseEstimator, RegressorMixin):
         with torch.no_grad():
             return torch.cat([m(X_t) for m in self.models_], dim=1).mean(dim=1).cpu().numpy().flatten()
 
-# 将类注册到全局命名空间，防止 Streamlit 加载报错
 import sys
 sys.modules['__main__'].StandardDNN = StandardDNN
 sys.modules['__main__'].TrueTabMMini = TrueTabMMini
@@ -77,9 +76,14 @@ st.markdown("基于 **深度特征寻优** 与 **自适应核密度逆向赋权 
 
 @st.cache_resource
 def load_kernel():
-    # 读取你通过超参数寻优图跑出来的最后文件
+    # 🌟 核心补丁：Web端同样需要将显卡张量洗白为 CPU 张量
+    original_torch_load = torch.load
+    torch.load = lambda *args, **kwargs: original_torch_load(*args, **kwargs, map_location='cpu')
+    
     data = joblib.load('model_artifacts_final.pkl')
-    # 动态匹配最佳模型
+    
+    torch.load = original_torch_load
+    
     best_r2 = -float('inf')
     best_name_key = None
     for study_name, std in data['studies'].items():
@@ -93,7 +97,7 @@ def load_kernel():
 try:
     X_baseline, all_models, default_best_name, best_r2 = load_kernel()
 except FileNotFoundError:
-    st.error("🚨 无法找到内核文件！请确保 `model_artifacts_final.pkl` 和 `app.py` 放在同一目录下。")
+    st.error("🚨 无法找到内核文件！请确保 `model_artifacts_final.pkl` 存在于同一目录下。")
     st.stop()
 
 # ==========================================
@@ -111,7 +115,6 @@ st.sidebar.markdown(f"*当前模型全集交叉验证 OOF R²: **{best_r2:.4f}**
 st.sidebar.divider()
 st.sidebar.subheader("2. 实时特征输入 (Real-time Features)")
 
-# 动态生成输入组件，根据你数据集的真实范围自动设限
 input_data = {}
 for col in X_baseline.columns:
     col_min = float(X_baseline[col].min())
@@ -129,7 +132,6 @@ for col in X_baseline.columns:
 user_df = pd.DataFrame([input_data])
 active_model = all_models[selected_model_name]
 
-# 预测动作 (注意：模型内核输出的是 Log 值，所以必须 expm1 还原)
 log_pred = active_model.predict(user_df)[0]
 real_qm = np.expm1(log_pred)
 
@@ -145,16 +147,14 @@ with col2:
     st.subheader("🔬 决策归因瀑布图 (Local SHAP Explanation)")
     with st.spinner("正在解码该工况下的模型决策路径..."):
         try:
-            # SHAP 局部解释 (Tree Explainer or Kernel Explainer)
             if 'XGBoost' in selected_model_name or 'Random Forest' in selected_model_name:
                 explainer = shap.TreeExplainer(active_model)
                 shap_values = explainer(user_df)
             else:
-                # 针对深度网络采用 KernelExplainer
                 def safe_predict(x_in):
                     if not isinstance(x_in, pd.DataFrame): x_in = pd.DataFrame(x_in, columns=user_df.columns)
                     return active_model.predict(x_in)
-                background = shap.kmeans(X_baseline, 5) # 减少背景点加速网页计算
+                background = shap.kmeans(X_baseline, 5)
                 explainer = shap.KernelExplainer(safe_predict, background)
                 shap_values = explainer(user_df)
 
