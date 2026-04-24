@@ -8,12 +8,10 @@ import sys
 import os
 import math
 import optuna
-import xgboost  # 🌟 必须显式导入，否则反序列化 XGBoost 模型时会静默崩溃
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.ensemble import RandomForestRegressor
 
 # ==========================================
-# 0. 底层蓝图 (严密对齐训练内核)
+# 0. 底层蓝图 (严密对齐内核)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -73,18 +71,15 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 终极参数劫持与内核加载
+# 1. 安全内核加载与无损特征提取
 # ==========================================
 @st.cache_resource
 def load_and_standardize():
-    # 🌟 终极防碰撞：接管所有形式的 map_location 传参
     if not hasattr(torch, '_orig_load_backup'):
         torch._orig_load_backup = torch.load
 
     def safe_cpu_load(*args, **kwargs):
         kwargs.pop('map_location', None)
-        # torch.load(f, map_location=None, ...) 
-        # 如果 args 长度 >= 2，说明 map_location 是通过位置参数传入的
         if len(args) >= 2:
             args_list = list(args)
             args_list[1] = 'cpu'
@@ -94,7 +89,6 @@ def load_and_standardize():
         return torch._orig_load_backup(*args, **kwargs)
 
     torch.load = safe_cpu_load
-    
     try:
         f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
         data = joblib.load(f_path)
@@ -104,38 +98,46 @@ def load_and_standardize():
     X_base = data['X']
     models = data['models']
     
-    display_to_actuals = {}
+    # 🌟 无损特征剥离逻辑
+    display_features = {} 
+    
     for col in X_base.columns:
-        if 'Ratio' in col or 'Log' in col:
+        if 'Ratio' in col or 'ratio' in col.lower():
+            # 强行确保派生比值的源物理量存在
+            display_features['dom_ha'] = 'DOM_HA'
+            display_features['initial concentration mg/l'] = 'initial concentration mg/L'
             continue
-        std_name = col.lower().strip()
-        if std_name not in display_to_actuals:
-            display_to_actuals[std_name] = []
-        display_to_actuals[std_name].append(col)
+            
+        # 剥离 Log 外壳，只取核心物理名
+        clean_name = col.replace('Log_', '').strip()
+        lower_name = clean_name.lower()
         
+        if lower_name not in display_features:
+            display_features[lower_name] = clean_name
+
     ui_phys, ui_func = [], []
-    for std_name, actuals in display_to_actuals.items():
-        ref_col = actuals[0]
-        unique_vals = X_base[ref_col].dropna().unique()
-        if set(unique_vals).issubset({0, 1}):
-            ui_func.append(std_name)
-        else:
-            ui_phys.append(std_name)
+    
+    for lower_name, clean_name in display_features.items():
+        # 探测这是 0/1 官能团还是连续数值
+        matched_cols = [c for c in X_base.columns if c.lower() == lower_name or c.lower() == f"log_{lower_name}"]
+        if matched_cols:
+            ref_col = matched_cols[0]
+            unique_vals = X_base[ref_col].dropna().unique()
+            if set(unique_vals).issubset({0, 1}):
+                ui_func.append(clean_name)
+                continue
+        ui_phys.append(clean_name)
             
-    for p in ['dom_ha', 'initial concentration mg/l']:
-        if p not in ui_phys and p not in ui_func:
-            ui_phys.append(p)
-            
-    return X_base, models, sorted(ui_phys), sorted(ui_func), display_to_actuals
+    return X_base, models, sorted(ui_phys), sorted(ui_func)
 
 try:
-    X_base, models, ui_phys, ui_func, mapping = load_and_standardize()
+    X_base, models, ui_phys, ui_func = load_and_standardize()
 except Exception as e:
     st.error(f"严重错误：内核读取失败。详细报错：{e}")
     st.stop()
 
 # ==========================================
-# 2. 界面设计 (极简脱水版)
+# 2. 界面设计 (全维度还原)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
 st.title("🧪 多糖吸附预测专家系统")
@@ -145,50 +147,58 @@ selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
 
 st.divider()
 st.subheader("2. 基础物理工况录入")
-st.info("💡 已合并所有冗余特征并隐藏派生项。")
+st.info("💡 隐藏的派生对数已自动剥离还原，所有关键物理特征现已无损显示。")
 
-user_standard_inputs = {}
+user_inputs = {}
 cols_p = st.columns(2)
-for i, std_name in enumerate(ui_phys):
+for i, name in enumerate(ui_phys):
     with cols_p[i % 2]:
-        actual_cols = mapping.get(std_name, [std_name])
-        ref_col = actual_cols[0] if actual_cols[0] in X_base.columns else X_base.columns[0]
-        m_val = X_base[ref_col].median() if ref_col in X_base.columns else 0.0
-        user_standard_inputs[std_name] = st.number_input(f"{std_name.title()}", value=float(m_val), format="%.4f")
+        # 反求真实中位数
+        matched_cols = [c for c in X_base.columns if c.lower() == name.lower() or c.lower() == f"log_{name.lower()}"]
+        if matched_cols:
+            ref_col = matched_cols[0]
+            m_val = X_base[ref_col].median()
+            # 如果原始数据里只有 Log 态，强行反解出物理真实值
+            if ref_col.startswith("Log_"):
+                m_val = np.expm1(m_val)
+        else:
+            m_val = 0.0
+            
+        user_inputs[name] = st.number_input(f"{name}", value=float(m_val), format="%.4f")
 
 st.divider()
 st.subheader("3. 表面官能团检测")
 cols_f = st.columns(3)
-for i, std_name in enumerate(ui_func):
+for i, name in enumerate(ui_func):
     with cols_f[i % 3]:
-        is_checked = st.checkbox(f"{std_name.title()}", value=False)
-        user_standard_inputs[std_name] = 1.0 if is_checked else 0.0
+        is_checked = st.checkbox(f"{name}", value=False)
+        user_inputs[name] = 1.0 if is_checked else 0.0
 
 # ==========================================
-# 3. 幕后多点联动合成逻辑
+# 3. 幕后智能合成引擎
 # ==========================================
 st.divider()
+user_inputs_lower = {k.lower(): v for k, v in user_inputs.items()}
 final_row = {}
 
+# 严格按模型输入需求重新合成全量特征矩阵
 for col in X_base.columns:
-    col_std = col.lower().strip()
+    col_lower = col.lower().strip()
     
-    if 'Ratio' in col:
-        ha = user_standard_inputs.get('dom_ha', 0)
-        c0 = user_standard_inputs.get('initial concentration mg/l', 1e-9)
-        ratio = ha / c0
-        final_row[col] = np.log1p(ratio) if 'Log' in col else ratio
+    if 'ratio' in col_lower:
+        ha = user_inputs_lower.get('dom_ha', 0)
+        c0 = user_inputs_lower.get('initial concentration mg/l', 1e-9)
+        val = ha / c0
+        final_row[col] = np.log1p(val) if col.startswith('Log_') else val
         
     elif col.startswith('Log_'):
-        root_std = col.replace('Log_', '').lower().strip()
-        val = user_standard_inputs.get(root_std, 0)
+        root_lower = col.replace('Log_', '').strip().lower()
+        val = user_inputs_lower.get(root_lower, 0)
         final_row[col] = np.log1p(val)
         
-    elif col_std in user_standard_inputs:
-        final_row[col] = user_standard_inputs[col_std]
-        
     else:
-        final_row[col] = X_base[col].median()
+        root_lower = col.strip().lower()
+        final_row[col] = user_inputs_lower.get(root_lower, X_base[col].median())
 
 predict_df = pd.DataFrame([final_row])[X_base.columns]
 
