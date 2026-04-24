@@ -2,8 +2,7 @@ streamlit
 pandas
 numpy
 joblib
-scikit-learn==1.4.2
+scikit-learn
 xgboost
-shap
 matplotlib
-torch
+torch --index-url https://download.pytorch.org/whl/cpu
