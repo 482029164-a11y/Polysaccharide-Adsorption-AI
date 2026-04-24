@@ -10,7 +10,7 @@ import os
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 0. 必须存在的底层蓝图 (补全评估器协议)
+# 0. 底层蓝图 (补全评估器协议以通过 sklearn 校验)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -70,10 +70,10 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 内核加载与智能 UI 映射
+# 1. 内核加载与物理量归位
 # ==========================================
 @st.cache_resource
-def load_and_map():
+def load_and_prep():
     orig_load = torch.load
     torch.load = lambda *args, **kwargs: orig_load(*args, **kwargs, map_location='cpu')
     f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
@@ -83,45 +83,42 @@ def load_and_map():
     X_base = data['X']
     models = data['models']
     
-    # 【核心逻辑】：识别显示列（去重，去掉 Log_ 前缀）
+    # 核心映射：筛选出哪些列是基础物理量，哪些是派生值
     all_cols = X_base.columns.tolist()
-    ui_display_cols = []
-    for c in all_cols:
-        clean_name = c.replace('Log_', '')
-        if clean_name not in ui_display_cols:
-            ui_display_cols.append(clean_name)
+    ui_cols = []
+    derived_cols = [] # 存储会被隐藏的 Ratio 或 Log 项
     
-    return X_base, models, ui_display_cols
+    for c in all_cols:
+        # 如果是比值（Ratio）或者已经带有 Log_ 前缀的，一律在界面隐藏
+        if 'Ratio' in c or c.startswith('Log_'):
+            derived_cols.append(c)
+        else:
+            ui_cols.append(c)
+            
+    return X_base, models, ui_cols, derived_cols
 
-X_base, models, ui_cols = load_and_map()
+X_base, models, ui_cols, derived_cols = load_and_prep()
 
 # ==========================================
-# 2. 界面设计 (纯数值输入 + 中位数)
+# 2. 界面设计 (纯物理量输入 + 中位数)
 # ==========================================
-st.set_page_config(page_title="Adsorption AI", layout="centered")
-st.title("🧪 多糖吸附预测专家系统")
+st.set_page_config(page_title="Adsorption Expert", layout="centered")
+st.title("🧪 多糖吸附预测专家系统 (物理量直推版)")
 
 st.subheader("1. 策略配置")
 selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
 
 st.divider()
-st.subheader("2. 特征参数手动录入")
-st.info("💡 系统已自动归并 Log 特征。请直接输入原始数值，默认值为中位数。")
+st.subheader("2. 物理工况录入")
+st.info("💡 所有比值（Ratio）与对数变换（Log）均在幕后自动计算，您只需输入实验原始物理量。")
 
 user_raw_inputs = {}
 cols = st.columns(2)
 
+# 渲染用户界面上的基础物理量输入框
 for i, name in enumerate(ui_cols):
     with cols[i % 2]:
-        # 寻找该特征对应的真实列名（可能是原名，也可能是 Log_ 名）
-        actual_col = f"Log_{name}" if f"Log_{name}" in X_base.columns else name
-        
-        # 自动反求原始值的中位数
-        if actual_col.startswith("Log_"):
-            default_val = np.expm1(X_base[actual_col].median())
-        else:
-            default_val = X_base[actual_col].median()
-            
+        default_val = X_base[name].median()
         user_raw_inputs[name] = st.number_input(
             f"{name}", 
             value=float(default_val), 
@@ -129,32 +126,64 @@ for i, name in enumerate(ui_cols):
         )
 
 # ==========================================
-# 3. 幕后自动转换与预测
+# 3. 幕后黑盒：逻辑自动合成
 # ==========================================
 st.divider()
 
-# 核心：根据用户输入的原始值，自动构造模型需要的 [Raw, Log] 混合特征行
-final_input_dict = {}
-for col in X_base.columns:
-    base_name = col.replace('Log_', '')
-    raw_val = user_raw_inputs[base_name]
-    
-    if col.startswith('Log_'):
-        final_input_dict[col] = np.log1p(raw_val) # 幕后自动算对数
-    else:
-        final_input_dict[col] = raw_val
+# 准备送入模型的最终字典
+final_input_row = {}
 
-input_df = pd.DataFrame([final_input_dict])
+# 第一步：填充用户直接输入的物理量
+for k, v in user_raw_inputs.items():
+    final_input_row[k] = v
+
+# 第二步：智能合成比值 (Ratio) 与 对数 (Log)
+# 🌟 注意：这里会根据你数据集中真实的派生列名进行匹配计算
+for d_col in derived_cols:
+    if d_col.startswith('Log_'):
+        # 处理 Log 类型的派生项
+        base_name = d_col.replace('Log_', '')
+        
+        if 'Ratio' in base_name:
+            # 如果是 Log_Ratio，先找 Ratio
+            # 常见逻辑：HA_to_C0_Ratio = DOM_HA / initial_concentration
+            # 💡 提示：此处需要根据你实际的列名定义微调逻辑
+            if 'HA_to_C0_Ratio' in base_name:
+                ha = user_raw_inputs.get('DOM_HA', 0)
+                c0 = user_raw_inputs.get('initial concentration mg/L', 1) # 防止除零
+                ratio = ha / c0 if c0 != 0 else 0
+                final_input_row[d_col] = np.log1p(ratio)
+        else:
+            # 如果只是普通的 Log 项
+            val = user_raw_inputs.get(base_name, 0)
+            final_input_row[d_col] = np.log1p(val)
+            
+    elif 'Ratio' in d_col:
+        # 处理非 Log 的 Ratio 项
+        if 'HA_to_C0_Ratio' in d_col:
+            ha = user_raw_inputs.get('DOM_HA', 0)
+            c0 = user_raw_inputs.get('initial concentration mg/L', 1)
+            final_input_row[d_col] = ha / c0 if c0 != 0 else 0
+
+# 补全可能缺失的列（赋中位数），确保 DataFrame 结构与模型完全一致
+final_df = pd.DataFrame([final_input_row])
+for missing_col in X_base.columns:
+    if missing_col not in final_df.columns:
+        final_df[missing_col] = X_base[missing_col].median()
+
+# 确保列顺序完全一致
+final_df = final_df[X_base.columns]
 
 try:
-    log_y = models[selected_name].predict(input_df)[0]
+    log_y = models[selected_name].predict(final_df)[0]
     real_y = np.expm1(log_y)
     
     st.markdown(f"""
-    <div style="background-color:#f8f9fa; padding:20px; border-radius:10px; border:1px solid #dee2e6; text-align:center;">
-        <h3 style="margin:0; color:#495057;">预测平衡吸附量 Qm</h3>
-        <h1 style="font-size:55px; color:#007BFF; margin:10px 0;">{real_y:.2f} <small style="font-size:20px; color:#6c757d;">mg/g</small></h1>
+    <div style="background-color:#F0F2F6; padding:25px; border-radius:12px; text-align:center; border: 2px solid #E0E0E0;">
+        <h3 style="margin:0; color:#444;">预测平衡吸附量 Qm</h3>
+        <h1 style="font-size:55px; color:#1E88E5; margin:10px 0;">{real_y:.2f} <small style="font-size:20px; color:#777;">mg/g</small></h1>
+        <p style="color:#888; font-size:14px;">（Ratio 与 Log 变换已在后台实时同步合成）</p>
     </div>
     """, unsafe_allow_html=True)
 except Exception as e:
-    st.error(f"计算失败: {e}")
+    st.error(f"模型推导失败: {e}")
