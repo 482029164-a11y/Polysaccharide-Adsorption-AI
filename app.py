@@ -7,11 +7,11 @@ import torch.nn as nn
 import sys
 import os
 import math
-import optuna  # 🌟 必须导入 optuna，否则 joblib 无法解析 pkl 中的寻优对象
+import optuna
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
-# 0. 底层蓝图 (确保与内核逻辑完全闭环)
+# 0. 底层蓝图 (严密对齐内核)
 # ==========================================
 class StandardDNN(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, dropout=0.1):
@@ -71,17 +71,17 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 终极安全内核加载与强力特征分拣
+# 1. 安全内核加载与智能特征分拣
 # ==========================================
 @st.cache_resource
 def load_and_standardize():
-    # 🌟 终极安全沙箱拦截器：彻底防止 map_location 参数碰撞
+    # 🌟 终极护盾：彻底抛弃 lambda，避免 multiple values 报错
     if not hasattr(torch, '_orig_load_backup'):
         torch._orig_load_backup = torch.load
 
     def safe_cpu_load(*args, **kwargs):
-        # 直接暴力覆写字典中的键，绝不会引起 multiple values 报错
-        kwargs['map_location'] = 'cpu'
+        kwargs.pop('map_location', None) # 暴力弹掉所有可能冲突的 map_location
+        kwargs['map_location'] = 'cpu'   # 强行注入纯净版 cpu 映射
         return torch._orig_load_backup(*args, **kwargs)
 
     torch.load = safe_cpu_load
@@ -90,28 +90,23 @@ def load_and_standardize():
         f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
         data = joblib.load(f_path)
     finally:
-        # 无论成功还是失败，必定还原加载器，防止热重载崩溃
+        # 无论如何，还原底层函数
         torch.load = torch._orig_load_backup
     
     X_base = data['X']
     models = data['models']
     
-    # --- 强力归一化分拣 ---
+    # 归一化分拣
     display_to_actuals = {}
-    
     for col in X_base.columns:
         if 'Ratio' in col or 'Log' in col:
             continue
-            
         std_name = col.lower().strip()
-        
         if std_name not in display_to_actuals:
             display_to_actuals[std_name] = []
         display_to_actuals[std_name].append(col)
         
-    ui_phys = []
-    ui_func = []
-    
+    ui_phys, ui_func = [], []
     for std_name, actuals in display_to_actuals.items():
         ref_col = actuals[0]
         unique_vals = X_base[ref_col].dropna().unique()
@@ -120,7 +115,6 @@ def load_and_standardize():
         else:
             ui_phys.append(std_name)
             
-    # 兜底确保 Ratio 联动所需的基础项存在
     for p in ['dom_ha', 'initial concentration mg/l']:
         if p not in ui_phys and p not in ui_func:
             ui_phys.append(p)
@@ -134,7 +128,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 交互界面设计
+# 2. 界面设计 (单点录入)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
 st.title("🧪 多糖吸附预测专家系统")
@@ -144,7 +138,7 @@ selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
 
 st.divider()
 st.subheader("2. 基础物理工况录入")
-st.info("💡 已合并冗余特征并隐藏派生项。输入值将同步应用至所有隐藏维度。")
+st.info("💡 已合并冗余特征并隐藏派生项。")
 
 user_standard_inputs = {}
 cols_p = st.columns(2)
@@ -152,7 +146,6 @@ for i, std_name in enumerate(ui_phys):
     with cols_p[i % 2]:
         actual_cols = mapping.get(std_name, [std_name])
         ref_col = actual_cols[0] if actual_cols[0] in X_base.columns else X_base.columns[0]
-        
         m_val = X_base[ref_col].median() if ref_col in X_base.columns else 0.0
         user_standard_inputs[std_name] = st.number_input(f"{std_name.title()}", value=float(m_val), format="%.4f")
 
@@ -165,10 +158,9 @@ for i, std_name in enumerate(ui_func):
         user_standard_inputs[std_name] = 1.0 if is_checked else 0.0
 
 # ==========================================
-# 3. 幕后多点联动影子合成逻辑
+# 3. 幕后多点联动合成逻辑
 # ==========================================
 st.divider()
-
 final_row = {}
 
 for col in X_base.columns:
@@ -194,7 +186,7 @@ for col in X_base.columns:
 predict_df = pd.DataFrame([final_row])[X_base.columns]
 
 # ==========================================
-# 4. 预测推断与展示
+# 4. 预测与展示
 # ==========================================
 try:
     res_log = models[selected_name].predict(predict_df)[0]
@@ -204,7 +196,7 @@ try:
     <div style="background-color:#F0F7FF; padding:30px; border-radius:15px; text-align:center; border:2px solid #007BFF;">
         <h3 style="margin:0; color:#444;">预测平衡吸附量 Qm</h3>
         <h1 style="font-size:60px; color:#007BFF; margin:10px 0;">{res_real:.2f} <small style="font-size:20px; color:#666;">mg/g</small></h1>
-        <p style="color:#888; font-size:14px;">（后台已自动同步合成对数变换与比值物理量）</p>
+        <p style="color:#888; font-size:14px;">（后台已自动同步合成所有特征）</p>
     </div>
     """, unsafe_allow_html=True)
 except Exception as e:
