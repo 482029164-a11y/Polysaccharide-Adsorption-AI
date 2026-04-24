@@ -175,7 +175,7 @@ for i, name in enumerate(ui_func):
         user_inputs[name] = 1.0 if is_checked else 0.0
 
 # ==========================================
-# 3. 幕后智能合成引擎
+# 3. 幕后智能合成引擎 (精确路由版)
 # ==========================================
 st.divider()
 user_inputs_lower = {k.lower(): v for k, v in user_inputs.items()}
@@ -185,23 +185,49 @@ final_row = {}
 for col in X_base.columns:
     col_lower = col.lower().strip()
     
+    # 🌟 1. 精确处理各种派生比值 (Ratio)
     if 'ratio' in col_lower:
-        ha = user_inputs_lower.get('dom_ha', 0)
-        c0 = user_inputs_lower.get('initial concentration mg/l', 1e-9)
-        val = ha / c0
+        val = 0.0 # 默认初始值
+        
+        # 路由 A: HA 与 C0 的比值
+        if 'ha_to_c0' in col_lower or 'ha/c0' in col_lower:
+            num = user_inputs_lower.get('dom_ha', 0)
+            den = user_inputs_lower.get('initial concentration mg/l', 1e-9)
+            val = num / den if den != 0 else 0
+            
+        # 路由 B: (请根据你数据集中真实存在的比值进行仿写)
+        # 假设你有一个 多糖/SSA 的比值，列名叫 'poly_to_ssa_ratio'
+        # elif 'poly_to_ssa' in col_lower:
+        #     num = user_inputs_lower.get('polysaccharide content', 0)
+        #     den = user_inputs_lower.get('specific surface area m2/g', 1e-9)
+        #     val = num / den if den != 0 else 0
+        
+        # 路由 C: 其他比值...以此类推
+        # elif 'xxx_to_yyy' in col_lower:
+        #     ...
+
+        else:
+            # 如果碰到了未定义的比值，为了防止报错，默认赋中位数，并在控制台提醒
+            val = X_base[col].median()
+            if col.startswith('Log_'):
+                val = np.expm1(val) # 剥离对数态恢复物理值
+            print(f"⚠️ 警告: 发现未定义计算公式的比值特征 [{col}]，已默认填充中位数。")
+
+        # 统一处理该比值是否需要 Log 转换
         final_row[col] = np.log1p(val) if col.startswith('Log_') else val
         
+    # 🌟 2. 处理普通的 Log 项 (如 Log_SSA, Log_Pore_Size 等)
     elif col.startswith('Log_'):
         root_lower = col.replace('Log_', '').strip().lower()
         val = user_inputs_lower.get(root_lower, 0)
         final_row[col] = np.log1p(val)
         
+    # 🌟 3. 处理普通的原始物理量和官能团 (直接读取，无需计算)
     else:
         root_lower = col.strip().lower()
         final_row[col] = user_inputs_lower.get(root_lower, X_base[col].median())
 
 predict_df = pd.DataFrame([final_row])[X_base.columns]
-
 # ==========================================
 # 4. 预测与展示
 # ==========================================
