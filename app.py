@@ -74,8 +74,9 @@ sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 # ==========================================
 @st.cache_resource
 def load_and_standardize():
+    # 🌟 修复此处的 NameError Bug 
     orig_load = torch.load
-    torch.load = lambda *args, **kwargs: original_torch_load(*args, **kwargs, map_location='cpu')
+    torch.load = lambda *args, **kwargs: orig_load(*args, **kwargs, map_location='cpu')
     f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
     data = joblib.load(f_path)
     torch.load = orig_load
@@ -125,7 +126,7 @@ X_base, models, ui_phys, ui_func, mapping = load_and_standardize()
 # 2. 界面设计 (单点录入)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
-st.title("🧪 多糖吸附预测专家系统 (去重精修版)")
+st.title("🧪 多糖吸附预测专家系统")
 
 st.subheader("1. 策略配置")
 selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
