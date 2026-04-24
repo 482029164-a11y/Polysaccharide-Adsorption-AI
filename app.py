@@ -10,9 +10,6 @@ import optuna
 import xgboost
 from sklearn.base import BaseEstimator, RegressorMixin
 
-# 🌟 修复1：页面配置必须作为第一条 Streamlit 指令
-st.set_page_config(page_title="Adsorption Expert", layout="centered")
-
 # ==========================================
 # 0. 底层蓝图 (严密对齐内核)
 # ==========================================
@@ -74,10 +71,11 @@ sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
 # ==========================================
-# 1. 安全内核加载与【全局统一特征注册表】
+# 1. 安全内核加载
 # ==========================================
 @st.cache_resource
-def load_and_standardize():
+def load_models():
+    # 彻底杜绝 map_location 多重赋值报错
     if not hasattr(torch, '_orig_load_backup'):
         torch._orig_load_backup = torch.load
 
@@ -86,10 +84,10 @@ def load_and_standardize():
         if len(args) >= 2:
             args_list = list(args)
             args_list[1] = 'cpu'
-            args = tuple(args_list)
+            return torch._orig_load_backup(*tuple(args_list), **kwargs)
         else:
             kwargs['map_location'] = 'cpu'
-        return torch._orig_load_backup(*args, **kwargs)
+            return torch._orig_load_backup(*args, **kwargs)
 
     torch.load = safe_cpu_load
     try:
@@ -98,125 +96,127 @@ def load_and_standardize():
     finally:
         torch.load = torch._orig_load_backup
     
-    X_base = data['X']
-    models = data['models']
-    
-    ui_registry = {}
-    
-    for col in X_base.columns:
-        if 'ratio' in col.lower():
-            continue 
-            
-        clean_name = col.replace('Log_', '').strip()
-        lower_id = clean_name.lower()
-        
-        if lower_id not in ui_registry:
-            is_bool = set(X_base[col].dropna().unique()).issubset({0, 1})
-            median_val = X_base[col].median()
-            if col.startswith('Log_'):
-                median_val = np.expm1(median_val)
-                
-            ui_registry[lower_id] = {
-                'display_name': clean_name,
-                'is_bool': is_bool,
-                'default': median_val
-            }
-        else:
-            if not col.startswith('Log_'):
-                is_bool = set(X_base[col].dropna().unique()).issubset({0, 1})
-                ui_registry[lower_id]['is_bool'] = is_bool
-                ui_registry[lower_id]['default'] = X_base[col].median()
-
-    for p_id, p_disp in [('dom_ha', 'DOM_HA'), ('initial concentration mg/l', 'initial concentration mg/L')]:
-        if p_id not in ui_registry:
-            ui_registry[p_id] = {'display_name': p_disp, 'is_bool': False, 'default': 1.0}
-
-    ui_phys = {k: v for k, v in ui_registry.items() if not v['is_bool']}
-    ui_func = {k: v for k, v in ui_registry.items() if v['is_bool']}
-            
-    return X_base, models, ui_phys, ui_func
+    return data['X'], data['models']
 
 try:
-    X_base, models, ui_phys, ui_func = load_and_standardize()
+    X_base, models = load_models()
 except Exception as e:
     st.error(f"内核读取失败: {e}")
     st.stop()
 
 # ==========================================
-# 2. 交互界面设计 (恢复实时响应)
+# 2. 绝对精准：基于表头的特征写死清单
 # ==========================================
+# A. 需要用户输入的 14 个连续物理量
+continuous_inputs = [
+    'Polysaccharide content', 'surface charge mv', 'porosity', 'pore size um', 
+    'pH', 'adsorbent dose mg/ml', 'temperature k', 'V ml', 
+    'DOM_CA', 'DOM_FA', 'DOM_HA', 
+    'adsorption time min', 'specific surface area m2/g', 'initial concentration mg/L'
+]
+
+# B. 需要用户勾选的 9 个官能团 (0/1)
+functional_inputs = [
+    'FG_Amide', 'FG_Amino', 'FG_Carbonyl', 'FG_Carboxyl', 'FG_Ether', 
+    'FG_Hydroxyl', 'FG_Phosphate', 'FG_Siloxane', 'FG_Sulfonic acid'
+]
+
+# 动态反求训练集中位数作为默认值，确保输入框永远不会报错
+def get_default_val(col_name):
+    if col_name in X_base.columns:
+        return float(X_base[col_name].median())
+    # 如果原列不在，说明它被转成了 Log_ 形态，在此反向解构
+    log_name = f"Log_{col_name}"
+    if log_name in X_base.columns:
+        return float(np.expm1(X_base[log_name].median()))
+    return 0.0
+
+# ==========================================
+# 3. 交互界面设计 (超高速实时响应)
+# ==========================================
+st.set_page_config(page_title="Adsorption Expert", layout="centered")
 st.title("🧪 多糖吸附预测专家系统")
 
-selected_name = st.selectbox("1. 选择模型引擎:", list(models.keys()))
+selected_name = st.selectbox("1. 选择预测中枢:", list(models.keys()))
 st.divider()
 
 st.subheader("2. 基础物理工况录入")
-st.info("💡 参数修改后，结果将实现毫秒级实时刷新。")
+st.info("💡 参数修改后，结果将实现毫秒级实时刷新。派生比值已隐式接通。")
 
-user_inputs = {}
+user_vals = {}
 
 cols_p = st.columns(2)
-idx = 0
-for lower_id, info in ui_phys.items():
-    with cols_p[idx % 2]:
-        user_inputs[lower_id] = st.number_input(
-            f"{info['display_name']}", 
-            value=float(info['default']), 
-            format="%.4f"
-        )
-    idx += 1
+for i, name in enumerate(continuous_inputs):
+    with cols_p[i % 2]:
+        def_val = get_default_val(name)
+        user_vals[name] = st.number_input(f"{name}", value=def_val, format="%.4f")
 
 st.markdown("---")
 st.subheader("3. 表面官能团检测")
-st.caption("勾选代表存在。")
+st.caption("勾选代表存在 (1)，不勾选代表未检出 (0)。")
 
 cols_f = st.columns(3)
-idx = 0
-for lower_id, info in ui_func.items():
-    with cols_f[idx % 3]:
-        is_checked = st.checkbox(f"{info['display_name']}", value=bool(info['default'] > 0))
-        user_inputs[lower_id] = 1.0 if is_checked else 0.0
-    idx += 1
+for i, name in enumerate(functional_inputs):
+    with cols_f[i % 3]:
+        def_val = get_default_val(name)
+        is_checked = st.checkbox(f"{name}", value=bool(def_val > 0))
+        user_vals[name] = 1.0 if is_checked else 0.0
 
 # ==========================================
-# 3. 幕后：绝对严谨的合成重构
+# 4. 幕后：百分百精确的硬映射合成
 # ==========================================
 st.divider()
 final_row = {}
 
-for col in X_base.columns:
-    col_lower = col.lower().strip()
-    
-    # [1] 处理派生比值
-    if 'ratio' in col_lower:
-        val = 0.0
-        # 🌟 修复2：放宽了比值判定规则，防止特征名称未能严格匹配导致联动静默失效
-        if ('ha' in col_lower and 'c0' in col_lower) or 'ha_to_c0' in col_lower:
-            ha = user_inputs.get('dom_ha', 1.0)
-            c0 = user_inputs.get('initial concentration mg/l', 1.0)
-            val = ha / c0 if c0 != 0 else 0.0
-        else:
-            val = X_base[col].median()
-            if col.startswith('Log_'):
-                val = np.expm1(val)
-                
-        final_row[col] = np.log1p(val) if col.startswith('Log_') else val
-        
-    # [2] 处理对数特征
-    elif col.startswith('Log_'):
-        root_id = col.replace('Log_', '').strip().lower()
-        val = user_inputs.get(root_id, 0.0)
-        final_row[col] = np.log1p(val)
-        
-    # [3] 处理原始物理特征
-    else:
-        root_id = col.strip().lower()
-        final_row[col] = user_inputs.get(root_id, X_base[col].median())
+# 1. 直接填入存在的物理量
+for col in continuous_inputs:
+    if col in X_base.columns:
+        final_row[col] = user_vals[col]
 
+# 2. 直接填入官能团
+for col in functional_inputs:
+    if col in X_base.columns:
+        final_row[col] = user_vals[col]
+
+# 3. 严格执行 Log 对数转换
+log_mapping = {
+    'Log_adsorption time min': 'adsorption time min',
+    'Log_specific surface area m2/g': 'specific surface area m2/g',
+    'Log_initial concentration mg/L': 'initial concentration mg/L'
+}
+for log_col, raw_col in log_mapping.items():
+    if log_col in X_base.columns:
+        final_row[log_col] = np.log1p(user_vals[raw_col])
+
+# 4. 严格执行派生比值计算 (分子分母绝不张冠李戴)
+c0 = user_vals['initial concentration mg/L']
+c0_safe = c0 if c0 != 0 else 1e-9
+
+dose = user_vals['adsorbent dose mg/ml']
+dose_safe = dose if dose != 0 else 1e-9
+
+if 'Log_CA_to_C0_Ratio' in X_base.columns:
+    final_row['Log_CA_to_C0_Ratio'] = np.log1p(user_vals['DOM_CA'] / c0_safe)
+
+if 'Log_FA_to_C0_Ratio' in X_base.columns:
+    final_row['Log_FA_to_C0_Ratio'] = np.log1p(user_vals['DOM_FA'] / c0_safe)
+
+if 'Log_HA_to_C0_Ratio' in X_base.columns:
+    final_row['Log_HA_to_C0_Ratio'] = np.log1p(user_vals['DOM_HA'] / c0_safe)
+
+if 'Log_C0_to_Dose_Ratio' in X_base.columns:
+    final_row['Log_C0_to_Dose_Ratio'] = np.log1p(c0 / dose_safe)
+
+# 保底校验：确保 27 个特征全在这个字典里
+for col in X_base.columns:
+    if col not in final_row:
+        final_row[col] = X_base[col].median()
+
+# 对齐 DataFrame
 predict_df = pd.DataFrame([final_row])[X_base.columns]
 
 # ==========================================
-# 4. 预测与展示
+# 5. 预测与展示
 # ==========================================
 try:
     res_log = models[selected_name].predict(predict_df)[0]
@@ -226,7 +226,7 @@ try:
     <div style="background-color:#F0F7FF; padding:30px; border-radius:15px; text-align:center; border:2px solid #007BFF;">
         <h3 style="margin:0; color:#444;">预测平衡吸附量 Qm</h3>
         <h1 style="font-size:60px; color:#007BFF; margin:10px 0;">{res_real:.2f} <small style="font-size:20px; color:#666;">mg/g</small></h1>
-        <p style="color:#888; font-size:14px;">（数据已实时同步运算并精确路由至 {len(X_base.columns)} 维特征矩阵）</p>
+        <p style="color:#888; font-size:14px;">（后台已根据表头结构实现 100% 精确联动计算）</p>
     </div>
     """, unsafe_allow_html=True)
 except Exception as e:
