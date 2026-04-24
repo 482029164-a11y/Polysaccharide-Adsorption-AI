@@ -70,19 +70,26 @@ sys.modules['__main__'].PyTorchSingleDNN = PyTorchSingleDNN
 sys.modules['__main__'].PyTorchDeepEnsemble = PyTorchDeepEnsemble
 sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 
-# ==========================================
-# 1. 安全内核加载与智能特征分拣
-# ==========================================
 @st.cache_resource
 def load_and_standardize():
-    # 🌟 终极护盾：彻底抛弃 lambda，避免 multiple values 报错
+    # 🌟 终极护盾：智能识别并覆盖 map_location
     if not hasattr(torch, '_orig_load_backup'):
         torch._orig_load_backup = torch.load
 
     def safe_cpu_load(*args, **kwargs):
-        kwargs.pop('map_location', None) # 暴力弹掉所有可能冲突的 map_location
-        kwargs['map_location'] = 'cpu'   # 强行注入纯净版 cpu 映射
-        return torch._orig_load_backup(*args, **kwargs)
+        # 将 args 转换为 list 以便修改
+        args_list = list(args)
+        
+        # 判断 map_location 是否作为位置参数传入 (即 args 的第二个元素)
+        if len(args_list) >= 2:
+            args_list[1] = 'cpu'              # 强行覆盖位置参数
+            kwargs.pop('map_location', None)  # 拔除 kwargs 中的残留，防止重复
+        else:
+            # 如果没有作为位置参数传入，则作为关键字参数强行注入
+            kwargs['map_location'] = 'cpu'
+            
+        # 传入修改后的参数
+        return torch._orig_load_backup(*args_list, **kwargs)
 
     torch.load = safe_cpu_load
     
@@ -95,6 +102,32 @@ def load_and_standardize():
     
     X_base = data['X']
     models = data['models']
+    
+    # ... [保留你原有的后续归一化分拣逻辑，无需修改] ...
+    
+    display_to_actuals = {}
+    for col in X_base.columns:
+        if 'Ratio' in col or 'Log' in col:
+            continue
+        std_name = col.lower().strip()
+        if std_name not in display_to_actuals:
+            display_to_actuals[std_name] = []
+        display_to_actuals[std_name].append(col)
+        
+    ui_phys, ui_func = [], []
+    for std_name, actuals in display_to_actuals.items():
+        ref_col = actuals[0]
+        unique_vals = X_base[ref_col].dropna().unique()
+        if set(unique_vals).issubset({0, 1}):
+            ui_func.append(std_name)
+        else:
+            ui_phys.append(std_name)
+            
+    for p in ['dom_ha', 'initial concentration mg/l']:
+        if p not in ui_phys and p not in ui_func:
+            ui_phys.append(p)
+            
+    return X_base, models, sorted(ui_phys), sorted(ui_func), display_to_actuals
     
     # 归一化分拣
     display_to_actuals = {}
