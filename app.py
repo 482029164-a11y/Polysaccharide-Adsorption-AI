@@ -7,6 +7,7 @@ import torch.nn as nn
 import sys
 import os
 import math
+import optuna  # 🌟 核心修复：必须导入 optuna，否则 joblib 无法解析 pkl 中的寻优对象
 from sklearn.base import BaseEstimator, RegressorMixin
 
 # ==========================================
@@ -74,7 +75,6 @@ sys.modules['__main__'].PyTorchTrueTabMRegressor = PyTorchTrueTabMRegressor
 # ==========================================
 @st.cache_resource
 def load_and_standardize():
-    # 🌟 修复此处的 NameError Bug 
     orig_load = torch.load
     torch.load = lambda *args, **kwargs: orig_load(*args, **kwargs, map_location='cpu')
     f_path = 'model_artifacts_final.pkl' if os.path.exists('model_artifacts_final.pkl') else 'model_artifacts_v32.pkl'
@@ -85,27 +85,22 @@ def load_and_standardize():
     models = data['models']
     
     # --- 强力归一化分拣 ---
-    # 建立【标准显示名】到【原始列名列表】的映射
     display_to_actuals = {}
     
     for col in X_base.columns:
-        # 排除所有派生项
         if 'Ratio' in col or 'Log' in col:
             continue
             
-        # 归一化处理：转小写，去首尾空格
         std_name = col.lower().strip()
         
         if std_name not in display_to_actuals:
             display_to_actuals[std_name] = []
         display_to_actuals[std_name].append(col)
         
-    # 分类显示名
     ui_phys = []
     ui_func = []
     
     for std_name, actuals in display_to_actuals.items():
-        # 取第一个列名作为参考列来判断数据类型
         ref_col = actuals[0]
         unique_vals = X_base[ref_col].dropna().unique()
         if set(unique_vals).issubset({0, 1}):
@@ -113,7 +108,7 @@ def load_and_standardize():
         else:
             ui_phys.append(std_name)
             
-    # 兜底：如果模型需要 HA 和 C0 来算 Ratio，确保它们在界面上
+    # 兜底确保联动基础项存在
     for p in ['dom_ha', 'initial concentration mg/l']:
         if p not in ui_phys and p not in ui_func:
             ui_phys.append(p)
@@ -126,7 +121,7 @@ X_base, models, ui_phys, ui_func, mapping = load_and_standardize()
 # 2. 界面设计 (单点录入)
 # ==========================================
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
-st.title("🧪 多糖吸附预测专家系统")
+st.title("🧪 多糖吸附预测专家系统 (修正版)")
 
 st.subheader("1. 策略配置")
 selected_name = st.selectbox("选择模型引擎:", list(models.keys()))
@@ -139,7 +134,6 @@ user_standard_inputs = {}
 cols_p = st.columns(2)
 for i, std_name in enumerate(ui_phys):
     with cols_p[i % 2]:
-        # 寻找该标准名对应的任意一个原始列来获取中位数
         actual_cols = mapping.get(std_name, [std_name])
         ref_col = actual_cols[0] if actual_cols[0] in X_base.columns else X_base.columns[0]
         
@@ -161,28 +155,23 @@ st.divider()
 
 final_row = {}
 
-# 遍历模型需要的每一个原始特征列
 for col in X_base.columns:
     col_std = col.lower().strip()
     
-    # 1. 如果是比值项，执行物理拆解合成
     if 'Ratio' in col:
         ha = user_standard_inputs.get('dom_ha', 0)
         c0 = user_standard_inputs.get('initial concentration mg/l', 1e-9)
         ratio = ha / c0
         final_row[col] = np.log1p(ratio) if 'Log' in col else ratio
         
-    # 2. 如果是 Log 项，寻找对应的标准根名进行计算
     elif col.startswith('Log_'):
         root_std = col.replace('Log_', '').lower().strip()
         val = user_standard_inputs.get(root_std, 0)
         final_row[col] = np.log1p(val)
         
-    # 3. 正常匹配 (处理大小写变体)
     elif col_std in user_standard_inputs:
         final_row[col] = user_standard_inputs[col_std]
         
-    # 4. 保底方案
     else:
         final_row[col] = X_base[col].median()
 
