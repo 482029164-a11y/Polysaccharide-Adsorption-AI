@@ -5,4 +5,5 @@ joblib
 scikit-learn
 xgboost
 matplotlib
+optuna
 torch --index-url https://download.pytorch.org/whl/cpu
