@@ -137,7 +137,19 @@ def get_default_val(col_name):
 st.set_page_config(page_title="Adsorption Expert", layout="centered")
 st.title("🧪 多糖吸附预测专家系统")
 
-selected_name = st.selectbox("1. 选择预测中枢:", list(models.keys()))
+# 1. 定义一个名称映射字典
+# 左侧(键)必须与 .pkl 文件中原有的模型名字完全一致（例如 'True TabM'）
+# 右侧(值)是你希望在网页下拉框里显示的新名字
+name_mapping = {
+    "True TabM": "TabMmini"
+}
+
+# 2. 在 selectbox 中使用 format_func 进行前端视觉替换
+selected_name = st.selectbox(
+    "1. 选择预测中枢:", 
+    options=list(models.keys()),
+    format_func=lambda x: name_mapping.get(x, x)  # 如果字典里找不到，就保持原名
+)
 st.divider()
 
 st.subheader("2. 基础物理工况录入")
