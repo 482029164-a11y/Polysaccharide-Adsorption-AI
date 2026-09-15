@@ -6,5 +6,5 @@ joblib
 scikit-learn
 xgboost
 matplotlib
-optuna==3.4.0
+optuna==4.8.0
 torch
